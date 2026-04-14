@@ -12,8 +12,14 @@ EXCHANGE_URLS = {
     "aster": "https://fapi.asterdex.com/fapi/v1/premiumIndex",
     "binance": "https://fapi.binance.com/fapi/v1/premiumIndex",
 }
-OKX_FUNDING_URL = "https://www.okx.com/api/v5/public/funding-rate"
-OKX_TICKER_URL = "https://www.okx.com/api/v5/market/ticker"
+OKX_FUNDING_URLS = [
+    "https://www.okx.com/api/v5/public/funding-rate",
+    "https://www.okx.com/priapi/v5/public/funding-rate",
+]
+OKX_TICKER_URLS = [
+    "https://www.okx.com/api/v5/market/ticker",
+    "https://www.okx.com/priapi/v5/market/ticker",
+]
 REQUEST_TIMEOUT = 10
 
 
@@ -36,16 +42,28 @@ def fetch_binance_like(exchange: str, symbol: str) -> dict:
         return {"rate": None, "price": None, "error": str(e)}
 
 
+def _okx_get(urls: list, params: dict) -> requests.Response:
+    """Try OKX URLs in order, with SSL verify fallback."""
+    last_err = None
+    for url in urls:
+        for verify in (True, False):
+            try:
+                resp = requests.get(url, params=params, timeout=REQUEST_TIMEOUT, verify=verify)
+                resp.raise_for_status()
+                return resp
+            except Exception as e:
+                last_err = e
+    raise last_err
+
+
 def fetch_okx(symbol: str) -> dict:
     try:
         inst_id = symbol_to_okx(symbol)
-        resp = requests.get(OKX_FUNDING_URL, params={"instId": inst_id}, timeout=REQUEST_TIMEOUT)
-        resp.raise_for_status()
+        resp = _okx_get(OKX_FUNDING_URLS, {"instId": inst_id})
         funding = resp.json()["data"][0]
         rate = float(funding["fundingRate"])
 
-        resp2 = requests.get(OKX_TICKER_URL, params={"instId": inst_id}, timeout=REQUEST_TIMEOUT)
-        resp2.raise_for_status()
+        resp2 = _okx_get(OKX_TICKER_URLS, {"instId": inst_id})
         ticker = resp2.json()["data"][0]
         price = float(ticker["last"])
 
