@@ -1,4 +1,5 @@
 import json
+import subprocess
 import threading
 import tkinter as tk
 from concurrent.futures import ThreadPoolExecutor
@@ -79,10 +80,11 @@ def load_config(path="config.json") -> dict:
 
 class FundingMonitor:
     BG = "#1e1e1e"
-    FG = "#cccccc"
+    FG = "#aaaaaa"
     GREEN = "#4ec9b0"
     RED = "#f44747"
-    HEADER_FG = "#ffffff"
+    HEADER_FG = "#dddddd"
+    ALPHA = 0.85
 
     def __init__(self, config: dict):
         self.config = config
@@ -93,16 +95,22 @@ class FundingMonitor:
         self.root.title("Funding Rate")
         self.root.configure(bg=self.BG)
         self.root.attributes("-topmost", True)
+        self.root.attributes("-alpha", self.ALPHA)
         self.root.resizable(False, False)
+        self.root.overrideredirect(True)
 
         self.root.bind("<Button-1>", self._start_drag)
         self.root.bind("<B1-Motion>", self._on_drag)
 
         self._drag_x = 0
         self._drag_y = 0
-        self.labels = {}
+
+        # Container for dynamic rate rows
+        self.row_frames = {}
         self._build_ui()
-        self._refresh()
+
+        # Schedule first fetch after mainloop starts
+        self.root.after(100, self._refresh)
 
     def _start_drag(self, event):
         self._drag_x = event.x
@@ -114,46 +122,51 @@ class FundingMonitor:
         self.root.geometry(f"+{x}+{y}")
 
     def _build_ui(self):
-        pad = {"padx": 8, "pady": 2}
-
         title = tk.Label(
-            self.root, text="Funding Rates", font=("Menlo", 13, "bold"),
+            self.root, text="Funding Rates", font=("Helvetica Neue", 12),
             bg=self.BG, fg=self.HEADER_FG,
         )
-        title.pack(pady=(8, 4))
+        title.pack(pady=(6, 2))
 
         for pair in self.pairs:
             sym = pair["symbol"]
 
             sym_label = tk.Label(
-                self.root, text=sym, font=("Menlo", 11, "bold"),
+                self.root, text=sym, font=("Helvetica Neue", 10),
                 bg=self.BG, fg=self.HEADER_FG,
             )
-            sym_label.pack(anchor="w", **pad)
+            sym_label.pack(anchor="w", padx=8, pady=(4, 0))
 
+            container = tk.Frame(self.root, bg=self.BG)
+            container.pack(anchor="w", fill="x")
+            self.row_frames[sym] = {
+                "container": container,
+                "exchanges": pair["exchanges"],
+            }
+
+            # Initial "loading..." rows
             for ex in pair["exchanges"]:
-                frame = tk.Frame(self.root, bg=self.BG)
-                frame.pack(anchor="w", padx=16, pady=1)
-
-                name_label = tk.Label(
-                    frame, text=f"{ex}:", font=("Menlo", 11),
-                    bg=self.BG, fg=self.FG, width=10, anchor="w",
-                )
-                name_label.pack(side="left")
-
-                rate_label = tk.Label(
-                    frame, text="loading...", font=("Menlo", 11),
-                    bg=self.BG, fg=self.FG, anchor="e", width=12,
-                )
-                rate_label.pack(side="left")
-
-                self.labels[(sym, ex)] = rate_label
+                self._make_row(container, ex, "loading...", self.FG)
 
         self.status_label = tk.Label(
-            self.root, text="", font=("Menlo", 9),
-            bg=self.BG, fg="#666666",
+            self.root, text="", font=("Helvetica Neue", 8),
+            bg=self.BG, fg="#555555",
         )
-        self.status_label.pack(pady=(4, 8))
+        self.status_label.pack(pady=(2, 6))
+
+    def _make_row(self, container, exchange, text, fg):
+        frame = tk.Frame(container, bg=self.BG)
+        frame.pack(anchor="w", padx=14, pady=0)
+
+        tk.Label(
+            frame, text=f"{exchange}:", font=("Menlo", 10),
+            bg=self.BG, fg=self.FG, width=10, anchor="w",
+        ).pack(side="left")
+
+        tk.Label(
+            frame, text=text, font=("Menlo", 10),
+            bg=self.BG, fg=fg, anchor="e", width=12,
+        ).pack(side="left")
 
     def _refresh(self):
         def do_fetch():
@@ -164,17 +177,33 @@ class FundingMonitor:
         self.root.after(self.interval, self._refresh)
 
     def _update_ui(self, results: dict):
-        for (sym, ex), label in self.labels.items():
-            data = results.get(sym, {}).get(ex, {"rate": None})
-            rate = data.get("rate")
-            if rate is not None:
-                pct = rate * 100
-                label.config(
-                    text=f"{pct:+.4f}%",
-                    fg=self.GREEN if rate >= 0 else self.RED,
-                )
-            else:
-                label.config(text="N/A", fg="#888888")
+        for sym, info in self.row_frames.items():
+            container = info["container"]
+
+            # Clear old rows
+            for w in container.winfo_children():
+                w.destroy()
+
+            # Build sorted rows
+            exchange_data = results.get(sym, {})
+            rows = []
+            for ex in info["exchanges"]:
+                data = exchange_data.get(ex, {"rate": None})
+                rate = data.get("rate")
+                rows.append((ex, rate))
+
+            # Sort by rate ascending (most negative first), None at end
+            rows.sort(key=lambda r: (r[1] is None, r[1] if r[1] is not None else 0))
+
+            for ex, rate in rows:
+                if rate is not None:
+                    pct = rate * 100
+                    text = f"{pct:+.4f}%"
+                    fg = self.GREEN if rate >= 0 else self.RED
+                else:
+                    text = "N/A"
+                    fg = "#555555"
+                self._make_row(container, ex, text, fg)
 
         now = datetime.now().strftime("%H:%M:%S")
         self.status_label.config(text=f"Updated: {now}")
