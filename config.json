@@ -1,0 +1,9 @@
+{
+  "pairs": [
+    {
+      "symbol": "RAVEUSDT",
+      "exchanges": ["aster", "binance", "okx"]
+    }
+  ],
+  "refresh_interval_seconds": 60
+}
