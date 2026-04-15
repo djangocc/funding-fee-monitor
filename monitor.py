@@ -225,6 +225,7 @@ class FundingMonitor:
         self.funding_interval = config.get("refresh_interval_seconds", 15) * 1000
         self._flashing = False
         self._flash_count = 0
+        self._spread_alert_count = 0
 
         # Latest funding rates: {(symbol, exchange): {"rate": float}}
         self.funding_data = {}
@@ -495,20 +496,22 @@ class FundingMonitor:
                 continue
 
             diff = bn_data["price"] - aster_data["price"]
-            if abs(diff) > 0.1:
+            if diff > -0.1:
+                self._spread_alert_count += 1
                 self.alert_label.config(
-                    text=f"BN-Aster spread: {diff:+.4f}",
-                    fg="#ff6666",
+                    text=f"BN-Aster: {diff:+.4f} ({self._spread_alert_count}/5)",
+                    fg="#ff6666" if self._spread_alert_count >= 5 else "#cc8800",
                 )
-                if not self._flashing:
+                if self._spread_alert_count >= 5 and not self._flashing:
                     self._flashing = True
                     subprocess.Popen(["afplay", "/System/Library/Sounds/Ping.aiff"])
                     self._flash_count = 0
                     self._flash()
-                    print(f"[{datetime.now():%H:%M:%S}] ALERT: BN-Aster spread {diff:+.4f}", flush=True)
+                    print(f"[{datetime.now():%H:%M:%S}] ALERT: BN-Aster spread {diff:+.4f} (5x)", flush=True)
                 return
 
         # Clear alert when spread is normal
+        self._spread_alert_count = 0
         self.alert_label.config(text="")
 
     def _check_aster_alert(self):
