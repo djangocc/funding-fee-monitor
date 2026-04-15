@@ -140,62 +140,71 @@ from(bucket: "{INFLUX_BUCKET}")
     return result
 
 
-def query_spread_ohlcv(base: str, target: str, symbol: str, period: str,
-                       start: Optional[str] = None, end: Optional[str] = None) -> list:
-    """Query spread (target - base) as OHLCV."""
+def _query_mid_series(exchange: str, symbol: str, period: str,
+                      start: Optional[str] = None, end: Optional[str] = None) -> dict:
+    """Query mid prices aggregated per window. Returns {timestamp_ms: [values]}."""
     window = PERIOD_MAP.get(period, "1m")
     range_start = start or DEFAULT_RANGE.get(period, "-6h")
     range_end = end or "now()"
 
     flux = f'''
-base = from(bucket: "{INFLUX_BUCKET}")
+from(bucket: "{INFLUX_BUCKET}")
   |> range(start: {range_start}, stop: {range_end})
   |> filter(fn: (r) => r._measurement == "price")
-  |> filter(fn: (r) => r.exchange == "{base}")
+  |> filter(fn: (r) => r.exchange == "{exchange}")
   |> filter(fn: (r) => r.symbol == "{symbol}")
   |> filter(fn: (r) => r._field == "mid")
-  |> aggregateWindow(every: {window}, fn: mean, createEmpty: false)
-  |> set(key: "source", value: "base")
-
-target = from(bucket: "{INFLUX_BUCKET}")
-  |> range(start: {range_start}, stop: {range_end})
-  |> filter(fn: (r) => r._measurement == "price")
-  |> filter(fn: (r) => r.exchange == "{target}")
-  |> filter(fn: (r) => r.symbol == "{symbol}")
-  |> filter(fn: (r) => r._field == "mid")
-  |> aggregateWindow(every: {window}, fn: mean, createEmpty: false)
-  |> set(key: "source", value: "target")
-
-union(tables: [base, target])
-  |> pivot(rowKey: ["_time"], columnKey: ["source"], valueColumn: "_value")
-  |> map(fn: (r) => ({{ r with _value: r.target - r.base }}))
-  |> yield(name: "spread")
+  |> window(every: {window})
 '''
-
     tables = query_api.query(flux)
-
-    # Collect spread values per window
-    spreads = []
+    # Group values by window start time
+    windows = {}
     for table in tables:
         for record in table.records:
-            ts = int(record.get_time().timestamp() * 1000)
+            win_start = int(record.values["_start"].timestamp() * 1000)
             val = record.get_value()
             if val is not None:
-                spreads.append({"ts": ts, "val": val})
+                windows.setdefault(win_start, []).append(val)
+    return windows
 
-    if not spreads:
-        return []
 
-    # For spread we use mean per window, so OHLC are all the same value
-    # To get proper OHLC we need raw ticks - use the mean as a simple line chart
+def query_spread_ohlcv(base: str, target: str, symbol: str, period: str,
+                       start: Optional[str] = None, end: Optional[str] = None) -> list:
+    """Query spread (target - base) as OHLCV by computing in Python."""
+    base_windows = _query_mid_series(base, symbol, period, start, end)
+    target_windows = _query_mid_series(target, symbol, period, start, end)
+
+    common_ts = sorted(set(base_windows.keys()) & set(target_windows.keys()))
+
     result = []
-    for s in spreads:
+    for ts in common_ts:
+        base_vals = base_windows[ts]
+        target_vals = target_windows[ts]
+        # Compute spread per tick pair (use mean of each, then diff)
+        base_mean = sum(base_vals) / len(base_vals)
+        target_mean = sum(target_vals) / len(target_vals)
+
+        # For OHLC: compute spread at first, max, min, last
+        base_first, base_last = base_vals[0], base_vals[-1]
+        target_first, target_last = target_vals[0], target_vals[-1]
+
+        spread_open = target_first - base_first
+        spread_close = target_last - base_last
+
+        # For high/low, compute all pairwise spreads using means
+        spread_mid = target_mean - base_mean
+        # Simple approach: use per-tick means for OHLC
+        spreads_all = [target_mean - base_mean]
+        # Also compute extremes
+        spread_high = max(target_vals) - min(base_vals)  # max possible spread
+        spread_low = min(target_vals) - max(base_vals)    # min possible spread
+
         result.append({
-            "timestamp": s["ts"],
-            "open": s["val"],
-            "high": s["val"],
-            "low": s["val"],
-            "close": s["val"],
+            "timestamp": ts,
+            "open": spread_open,
+            "high": spread_high,
+            "low": spread_low,
+            "close": spread_close,
         })
     return result
 
