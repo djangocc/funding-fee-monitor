@@ -500,13 +500,13 @@ class FundingMonitor:
             ("okx_open",  "okx",     lambda d: d < 0.35,  "OKX-Aster", self.GREEN, "开仓"),
         ]
 
+        alerts = []
         for pair in self.pairs:
             sym = pair["symbol"]
             aster_data = self.price_mgr.prices.get((sym, "aster"))
             if not aster_data:
                 continue
 
-            alerts = []
             for key, exchange, cond, label, color, action in RULES:
                 if exchange not in pair["exchanges"]:
                     continue
