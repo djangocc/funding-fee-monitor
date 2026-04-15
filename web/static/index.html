@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Funding Fee Charts</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #1a1a2e; color: #e0e0e0; font-family: 'Menlo', monospace; }
+
+    .toolbar {
+      display: flex; align-items: center; gap: 12px;
+      padding: 8px 16px; background: #16213e; border-bottom: 1px solid #333;
+    }
+    .toolbar select, .toolbar button {
+      background: #0f3460; color: #e0e0e0; border: 1px solid #444;
+      padding: 4px 8px; border-radius: 4px; font-family: inherit; font-size: 12px;
+      cursor: pointer;
+    }
+    .toolbar select:hover, .toolbar button:hover { border-color: #4ec9b0; }
+    .toolbar button.active { background: #4ec9b0; color: #1a1a2e; }
+    .toolbar .period-group { display: flex; gap: 2px; }
+    .toolbar .period-group button { min-width: 32px; }
+    .toolbar label { font-size: 12px; color: #888; }
+
+    .charts-container {
+      display: flex; flex-direction: column; height: calc(100vh - 40px);
+    }
+    .chart-section {
+      flex: 1; display: flex; flex-direction: column; border-bottom: 1px solid #333;
+    }
+    .chart-title {
+      font-size: 11px; padding: 4px 12px; background: #16213e; color: #888;
+    }
+    .chart-wrapper { flex: 1; }
+  </style>
+</head>
+<body>
+  <div class="toolbar">
+    <label>Exchange:</label>
+    <select id="exchange">
+      <option value="aster">Aster</option>
+      <option value="binance">Binance</option>
+      <option value="okx">OKX</option>
+    </select>
+
+    <label>Spread:</label>
+    <select id="spread-target">
+      <option value="binance">BN - Aster</option>
+      <option value="okx">OKX - Aster</option>
+    </select>
+
+    <label>Period:</label>
+    <div class="period-group" id="period-group">
+      <button data-period="1s">1s</button>
+      <button data-period="5s">5s</button>
+      <button data-period="15s">15s</button>
+      <button data-period="1m" class="active">1m</button>
+      <button data-period="5m">5m</button>
+      <button data-period="15m">15m</button>
+      <button data-period="1h">1h</button>
+    </div>
+  </div>
+
+  <div class="charts-container">
+    <div class="chart-section">
+      <div class="chart-title" id="price-title">Price: RAVEUSDT @ aster</div>
+      <div class="chart-wrapper" id="price-chart"></div>
+    </div>
+    <div class="chart-section">
+      <div class="chart-title" id="spread-title">Spread: binance - aster</div>
+      <div class="chart-wrapper" id="spread-chart"></div>
+    </div>
+  </div>
+
+  <script src="https://unpkg.com/klinecharts@latest/dist/klinecharts.min.js"></script>
+  <script>
+    // State
+    let currentExchange = 'aster';
+    let currentSpreadTarget = 'binance';
+    let currentPeriod = '1m';
+    let priceChart = null;
+    let spreadChart = null;
+    let ws = null;
+    let wsSpread = null;
+
+    // Init charts
+    function initCharts() {
+      priceChart = klinecharts.init('price-chart', {
+        styles: {
+          grid: { show: true, horizontal: { color: '#222' }, vertical: { color: '#222' } },
+          candle: {
+            priceMark: { last: { show: true } },
+            bar: { upColor: '#4ec9b0', downColor: '#f44747', upBorderColor: '#4ec9b0', downBorderColor: '#f44747' },
+          },
+          indicator: { ohlc: { show: false } },
+          xAxis: { tickText: { color: '#666' } },
+          yAxis: { tickText: { color: '#666' } },
+        }
+      });
+
+      spreadChart = klinecharts.init('spread-chart', {
+        styles: {
+          grid: { show: true, horizontal: { color: '#222' }, vertical: { color: '#222' } },
+          candle: {
+            priceMark: { last: { show: true } },
+            bar: { upColor: '#4ec9b0', downColor: '#f44747', upBorderColor: '#4ec9b0', downBorderColor: '#f44747' },
+          },
+          indicator: { ohlc: { show: false } },
+          xAxis: { tickText: { color: '#666' } },
+          yAxis: { tickText: { color: '#666' } },
+        }
+      });
+
+      // Add default indicators
+      priceChart.createIndicator('MA', false, { id: 'candle_pane' });
+      priceChart.createIndicator('VOL');
+      spreadChart.createIndicator('MA', false, { id: 'candle_pane' });
+      spreadChart.createIndicator('MACD');
+    }
+
+    // Fetch and load data
+    async function loadPriceData() {
+      const title = document.getElementById('price-title');
+      title.textContent = `Price: RAVEUSDT @ ${currentExchange} [${currentPeriod}]`;
+
+      try {
+        const resp = await fetch(`/api/kline?exchange=${currentExchange}&symbol=RAVEUSDT&period=${currentPeriod}`);
+        const json = await resp.json();
+        priceChart.applyNewData(json.data);
+      } catch (e) {
+        console.error('Failed to load price data:', e);
+      }
+    }
+
+    async function loadSpreadData() {
+      const title = document.getElementById('spread-title');
+      title.textContent = `Spread: ${currentSpreadTarget} - aster [${currentPeriod}]`;
+
+      try {
+        const resp = await fetch(`/api/spread?base=aster&target=${currentSpreadTarget}&symbol=RAVEUSDT&period=${currentPeriod}`);
+        const json = await resp.json();
+        spreadChart.applyNewData(json.data);
+      } catch (e) {
+        console.error('Failed to load spread data:', e);
+      }
+    }
+
+    function loadAllData() {
+      loadPriceData();
+      loadSpreadData();
+    }
+
+    // WebSocket for real-time updates
+    function connectWS() {
+      // Price WS
+      if (ws) ws.close();
+      ws = new WebSocket(`ws://${location.host}/ws/kline`);
+      ws.onopen = () => {
+        ws.send(JSON.stringify({
+          exchange: currentExchange,
+          symbol: 'RAVEUSDT',
+          period: currentPeriod,
+        }));
+      };
+      ws.onmessage = (e) => {
+        const bar = JSON.parse(e.data);
+        priceChart.updateData(bar);
+      };
+      ws.onclose = () => setTimeout(connectWS, 3000);
+
+      // Spread WS
+      if (wsSpread) wsSpread.close();
+      wsSpread = new WebSocket(`ws://${location.host}/ws/kline`);
+      wsSpread.onopen = () => {
+        // For spread we subscribe to target exchange and compute diff client-side
+        wsSpread.send(JSON.stringify({
+          exchange: currentSpreadTarget,
+          symbol: 'RAVEUSDT',
+          period: currentPeriod,
+        }));
+      };
+      wsSpread.onmessage = (e) => {
+        // Simple approach: just reload spread periodically
+      };
+    }
+
+    // Auto-refresh spread every 5 seconds
+    setInterval(() => {
+      loadSpreadData();
+    }, 5000);
+
+    // Event handlers
+    document.getElementById('exchange').addEventListener('change', (e) => {
+      currentExchange = e.target.value;
+      loadAllData();
+      connectWS();
+    });
+
+    document.getElementById('spread-target').addEventListener('change', (e) => {
+      currentSpreadTarget = e.target.value;
+      loadSpreadData();
+    });
+
+    document.getElementById('period-group').addEventListener('click', (e) => {
+      if (e.target.tagName !== 'BUTTON') return;
+      document.querySelectorAll('#period-group button').forEach(b => b.classList.remove('active'));
+      e.target.classList.add('active');
+      currentPeriod = e.target.dataset.period;
+      loadAllData();
+      connectWS();
+    });
+
+    // Init
+    initCharts();
+    loadAllData();
+    connectWS();
+  </script>
+</body>
+</html>
