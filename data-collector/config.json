@@ -1,0 +1,14 @@
+{
+  "influxdb": {
+    "url": "http://localhost:8101",
+    "token": "funding-fee-monitor-token",
+    "org": "funding",
+    "bucket": "prices"
+  },
+  "pairs": [
+    {
+      "symbol": "RAVEUSDT",
+      "exchanges": ["aster", "binance", "okx"]
+    }
+  ]
+}
