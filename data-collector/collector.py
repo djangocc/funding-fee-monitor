@@ -1,9 +1,9 @@
 """
-Price Collector - WebSocket → 1s aggregation → InfluxDB
+Price Collector - WebSocket → 100ms aggregation → InfluxDB
 
 Collects real-time prices from Aster, Binance, OKX via WebSocket.
-Aggregates multiple ticks within each second into a single data point (average).
-Writes to InfluxDB every second.
+Aggregates ticks within each 100ms window into a single data point.
+Writes to InfluxDB with millisecond precision.
 """
 
 import json
@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 
 import websocket
 from influxdb_client import InfluxDBClient, Point, WritePrecision
-from influxdb_client.client.write_api import SYNCHRONOUS
+from influxdb_client.client.write_api import ASYNCHRONOUS
 
 # --- WebSocket URLs ---
 WS_URLS = {
@@ -25,6 +25,8 @@ WS_URLS = {
     "binance": "wss://fstream.binance.com/ws/{symbol_lower}@bookTicker",
     "okx": "wss://ws.okx.com:8443/ws/v5/public",
 }
+
+FLUSH_INTERVAL = 0.1  # 100ms
 
 
 def symbol_to_okx(symbol: str) -> str:
@@ -38,7 +40,7 @@ def load_config(path="config.json") -> dict:
 
 
 class TickBuffer:
-    """Thread-safe buffer that collects ticks and produces 1s aggregates."""
+    """Thread-safe buffer that collects ticks and produces 100ms aggregates."""
 
     def __init__(self):
         self._lock = threading.Lock()
@@ -55,17 +57,17 @@ class TickBuffer:
                 "ts": ts_ms,
             })
 
-    def flush(self) -> dict:
-        """Return 1s aggregates and clear buffer.
+    def flush(self) -> list:
+        """Return list of points and clear buffer.
 
-        Returns: {(symbol, exchange): {"bid": avg, "ask": avg, "mid": avg, "ts": latest}}
+        Returns: [{"symbol", "exchange", "bid", "ask", "mid", "ts", "tick_count"}, ...]
         """
         with self._lock:
             ticks = dict(self._ticks)
             self._ticks = defaultdict(list)
 
-        result = {}
-        for key, tick_list in ticks.items():
+        points = []
+        for (symbol, exchange), tick_list in ticks.items():
             if not tick_list:
                 continue
             n = len(tick_list)
@@ -73,23 +75,27 @@ class TickBuffer:
             avg_ask = sum(t["ask"] for t in tick_list) / n
             avg_mid = sum(t["mid"] for t in tick_list) / n
             latest_ts = max(t["ts"] for t in tick_list)
-            result[key] = {
+            points.append({
+                "symbol": symbol,
+                "exchange": exchange,
                 "bid": avg_bid,
                 "ask": avg_ask,
                 "mid": avg_mid,
                 "ts": latest_ts,
                 "tick_count": n,
-            }
-        return result
+            })
+        return points
 
 
 class PriceCollector:
-    """Collects prices via WebSocket and writes 1s aggregates to InfluxDB."""
+    """Collects prices via WebSocket and writes 100ms aggregates to InfluxDB."""
 
     def __init__(self, config: dict):
         self.config = config
         self.pairs = config["pairs"]
         self.buffer = TickBuffer()
+        self._write_count = 0
+        self._last_log = time.time()
 
         # InfluxDB client
         influx_cfg = config["influxdb"]
@@ -98,7 +104,7 @@ class PriceCollector:
             token=influx_cfg["token"],
             org=influx_cfg["org"],
         )
-        self.write_api = self.client.write_api(write_options=SYNCHRONOUS)
+        self.write_api = self.client.write_api(write_options=ASYNCHRONOUS)
         self.bucket = influx_cfg["bucket"]
         self.org = influx_cfg["org"]
 
@@ -118,37 +124,39 @@ class PriceCollector:
         self._writer_loop()
 
     def _writer_loop(self):
-        """Flush buffer every 1s and write to InfluxDB."""
-        print(f"[{datetime.now():%H:%M:%S}] Writer loop started", flush=True)
+        """Flush buffer every 100ms and write to InfluxDB."""
+        print(f"[{datetime.now():%H:%M:%S}] Writer loop started (100ms interval)", flush=True)
         while True:
-            time.sleep(1)
+            time.sleep(FLUSH_INTERVAL)
             try:
-                aggregates = self.buffer.flush()
-                if not aggregates:
+                data_points = self.buffer.flush()
+                if not data_points:
                     continue
 
-                points = []
-                for (symbol, exchange), data in aggregates.items():
+                influx_points = []
+                for d in data_points:
                     point = (
                         Point("price")
-                        .tag("exchange", exchange)
-                        .tag("symbol", symbol)
-                        .field("bid", data["bid"])
-                        .field("ask", data["ask"])
-                        .field("mid", data["mid"])
-                        .field("tick_count", data["tick_count"])
-                        .time(datetime.now(timezone.utc), WritePrecision.S)
+                        .tag("exchange", d["exchange"])
+                        .tag("symbol", d["symbol"])
+                        .field("bid", d["bid"])
+                        .field("ask", d["ask"])
+                        .field("mid", d["mid"])
+                        .field("tick_count", d["tick_count"])
+                        .time(d["ts"] * 1_000_000, WritePrecision.NS)  # ms → ns
                     )
-                    points.append(point)
+                    influx_points.append(point)
 
-                self.write_api.write(bucket=self.bucket, org=self.org, record=points)
+                self.write_api.write(bucket=self.bucket, org=self.org, record=influx_points)
+                self._write_count += len(influx_points)
 
-                ts = datetime.now().strftime("%H:%M:%S")
-                summary = ", ".join(
-                    f"{ex}={d['mid']:.4f}({d['tick_count']}t)"
-                    for (sym, ex), d in sorted(aggregates.items())
-                )
-                print(f"[{ts}] Wrote {len(points)} points: {summary}", flush=True)
+                # Log summary every 5 seconds
+                now = time.time()
+                if now - self._last_log >= 5:
+                    ts = datetime.now().strftime("%H:%M:%S")
+                    print(f"[{ts}] {self._write_count} points written in last 5s", flush=True)
+                    self._write_count = 0
+                    self._last_log = now
 
             except Exception:
                 traceback.print_exc()
@@ -235,6 +243,7 @@ class PriceCollector:
         ws.run_forever(sslopt={"cert_reqs": ssl.CERT_NONE})
 
     def stop(self):
+        self.write_api.close()
         self.client.close()
 
 
