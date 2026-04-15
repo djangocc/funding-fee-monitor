@@ -1,14 +1,18 @@
 import json
 import os
+import ssl
 import subprocess
+import threading
 import tkinter as tk
 import traceback
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
 import requests
+import websocket
 
-EXCHANGE_URLS = {
+# --- HTTP endpoints (funding rate only) ---
+FUNDING_URLS = {
     "aster": "https://fapi.asterdex.com/fapi/v1/premiumIndex",
     "binance": "https://fapi.binance.com/fapi/v1/premiumIndex",
 }
@@ -16,11 +20,14 @@ OKX_FUNDING_URLS = [
     "https://www.okx.com/api/v5/public/funding-rate",
     "https://www.okx.com/priapi/v5/public/funding-rate",
 ]
-OKX_TICKER_URLS = [
-    "https://www.okx.com/api/v5/market/ticker",
-    "https://www.okx.com/priapi/v5/market/ticker",
-]
 REQUEST_TIMEOUT = 10
+
+# --- WebSocket endpoints (price only) ---
+WS_URLS = {
+    "aster": "wss://fstream.asterdex.com/ws/{symbol_lower}@markPrice@1s",
+    "binance": "wss://fstream.binance.com/ws/{symbol_lower}@markPrice@1s",
+    "okx": "wss://ws.okx.com:8443/ws/v5/public",
+}
 
 
 def symbol_to_okx(symbol: str) -> str:
@@ -28,23 +35,9 @@ def symbol_to_okx(symbol: str) -> str:
     return f"{base}-USDT-SWAP"
 
 
-def fetch_binance_like(exchange: str, symbol: str) -> dict:
-    try:
-        url = EXCHANGE_URLS[exchange]
-        resp = requests.get(url, params={"symbol": symbol}, timeout=REQUEST_TIMEOUT)
-        resp.raise_for_status()
-        data = resp.json()
-        return {
-            "rate": float(data["lastFundingRate"]),
-            "price": float(data["markPrice"]),
-            "price_time": int(data["time"]),
-        }
-    except Exception as e:
-        return {"rate": None, "price": None, "price_time": None, "error": str(e)}
-
+# --- Funding rate fetchers (HTTP, 15s interval) ---
 
 def _okx_get(urls: list, params: dict) -> requests.Response:
-    """Try OKX URLs in order, with SSL verify fallback."""
     last_err = None
     for url in urls:
         for verify in (True, False):
@@ -57,39 +50,43 @@ def _okx_get(urls: list, params: dict) -> requests.Response:
     raise last_err
 
 
-def fetch_okx(symbol: str) -> dict:
+def fetch_funding_binance_like(exchange: str, symbol: str) -> dict:
+    try:
+        url = FUNDING_URLS[exchange]
+        resp = requests.get(url, params={"symbol": symbol}, timeout=REQUEST_TIMEOUT)
+        resp.raise_for_status()
+        data = resp.json()
+        return {"rate": float(data["lastFundingRate"])}
+    except Exception as e:
+        return {"rate": None, "error": str(e)}
+
+
+def fetch_funding_okx(symbol: str) -> dict:
     try:
         inst_id = symbol_to_okx(symbol)
         resp = _okx_get(OKX_FUNDING_URLS, {"instId": inst_id})
-        funding = resp.json()["data"][0]
-        rate = float(funding["fundingRate"])
-
-        resp2 = _okx_get(OKX_TICKER_URLS, {"instId": inst_id})
-        ticker = resp2.json()["data"][0]
-        price = float(ticker["last"])
-
-        return {"rate": rate, "price": price, "price_time": int(ticker["ts"])}
+        data = resp.json()["data"][0]
+        return {"rate": float(data["fundingRate"])}
     except Exception as e:
-        return {"rate": None, "price": None, "price_time": None, "error": str(e)}
+        return {"rate": None, "error": str(e)}
 
 
-def fetch_rate(exchange: str, symbol: str) -> dict:
+def fetch_funding(exchange: str, symbol: str) -> dict:
     if exchange == "okx":
-        return fetch_okx(symbol)
-    return fetch_binance_like(exchange, symbol)
+        return fetch_funding_okx(symbol)
+    return fetch_funding_binance_like(exchange, symbol)
 
 
-def fetch_all_rates(pairs: list) -> dict:
+def fetch_all_funding(pairs: list) -> dict:
     tasks = []
     for pair in pairs:
-        symbol = pair["symbol"]
         for exchange in pair["exchanges"]:
-            tasks.append((symbol, exchange))
+            tasks.append((pair["symbol"], exchange))
 
     results = {}
     with ThreadPoolExecutor(max_workers=len(tasks)) as pool:
         futures = {
-            pool.submit(fetch_rate, ex, sym): (sym, ex) for sym, ex in tasks
+            pool.submit(fetch_funding, ex, sym): (sym, ex) for sym, ex in tasks
         }
         for future in futures:
             sym, ex = futures[future]
@@ -101,6 +98,105 @@ def load_config(path="config.json") -> dict:
     with open(path) as f:
         return json.load(f)
 
+
+# --- WebSocket price manager ---
+
+class PriceManager:
+    """Manages WebSocket connections for real-time price updates."""
+
+    def __init__(self, pairs: list, on_price_update):
+        self.pairs = pairs
+        self.on_price_update = on_price_update
+        # {(symbol, exchange): {"price": float, "price_time": int}}
+        self.prices = {}
+        self._ws_threads = []
+
+    def start(self):
+        for pair in self.pairs:
+            symbol = pair["symbol"]
+            for exchange in pair["exchanges"]:
+                t = threading.Thread(
+                    target=self._run_ws,
+                    args=(symbol, exchange),
+                    daemon=True,
+                )
+                t.start()
+                self._ws_threads.append(t)
+
+    def _run_ws(self, symbol: str, exchange: str):
+        while True:
+            try:
+                if exchange == "okx":
+                    self._run_okx_ws(symbol, exchange)
+                else:
+                    self._run_binance_ws(symbol, exchange)
+            except Exception:
+                traceback.print_exc()
+            # Reconnect after 3s on failure
+            import time
+            time.sleep(3)
+            print(f"[{datetime.now():%H:%M:%S}] Reconnecting WS {exchange}/{symbol}...", flush=True)
+
+    def _run_binance_ws(self, symbol: str, exchange: str):
+        url = WS_URLS[exchange].format(symbol_lower=symbol.lower())
+        sslopt = {"cert_reqs": ssl.CERT_NONE} if exchange == "aster" else {}
+
+        def on_message(ws, message):
+            try:
+                data = json.loads(message)
+                price = float(data["p"])
+                price_time = int(data["E"])
+                self.prices[(symbol, exchange)] = {
+                    "price": price,
+                    "price_time": price_time,
+                }
+                self.on_price_update()
+            except Exception:
+                traceback.print_exc()
+
+        def on_error(ws, error):
+            print(f"[WS {exchange}] Error: {error}", flush=True)
+
+        ws = websocket.WebSocketApp(url, on_message=on_message, on_error=on_error)
+        ws.run_forever(sslopt=sslopt)
+
+    def _run_okx_ws(self, symbol: str, exchange: str):
+        url = WS_URLS["okx"]
+        inst_id = symbol_to_okx(symbol)
+
+        def on_open(ws):
+            sub = json.dumps({
+                "op": "subscribe",
+                "args": [{"channel": "tickers", "instId": inst_id}],
+            })
+            ws.send(sub)
+
+        def on_message(ws, message):
+            try:
+                data = json.loads(message)
+                if "data" not in data:
+                    return
+                ticker = data["data"][0]
+                price = float(ticker["last"])
+                price_time = int(ticker["ts"])
+                self.prices[(symbol, exchange)] = {
+                    "price": price,
+                    "price_time": price_time,
+                }
+                self.on_price_update()
+            except Exception:
+                traceback.print_exc()
+
+        def on_error(ws, error):
+            print(f"[WS okx] Error: {error}", flush=True)
+
+        ws = websocket.WebSocketApp(
+            url, on_open=on_open, on_message=on_message, on_error=on_error,
+        )
+        ws.run_forever(sslopt={"cert_reqs": ssl.CERT_NONE})
+
+
+# --- GUI ---
 
 class FundingMonitor:
     BG = "#1e1e1e"
@@ -114,9 +210,12 @@ class FundingMonitor:
     def __init__(self, config: dict):
         self.config = config
         self.pairs = config["pairs"]
-        self.interval = config.get("refresh_interval_seconds", 60) * 1000
+        self.funding_interval = config.get("refresh_interval_seconds", 15) * 1000
         self._flashing = False
         self._flash_count = 0
+
+        # Latest funding rates: {(symbol, exchange): {"rate": float}}
+        self.funding_data = {}
 
         self.root = tk.Tk()
         self.root.title("Funding Rate")
@@ -134,7 +233,17 @@ class FundingMonitor:
 
         self.labels = {}
         self._build_ui()
-        self.root.after(100, self._refresh)
+
+        # Price manager with WebSocket
+        self.price_mgr = PriceManager(self.pairs, self._on_ws_price_update)
+        self.price_mgr.start()
+
+        # Funding rate polling
+        self.root.after(100, self._refresh_funding)
+
+    def _on_ws_price_update(self):
+        """Called from WS threads when a new price arrives."""
+        self.root.after(0, self._update_prices)
 
     def _start_drag(self, event):
         self._drag_x = event.x
@@ -157,7 +266,6 @@ class FundingMonitor:
             sym_label.grid(row=row_idx, column=0, columnspan=5, sticky="w", padx=8, pady=(6, 2))
             row_idx += 1
 
-            # Column headers
             for col, (header, anchor, px) in enumerate([
                 ("", "w", (14, 4)),
                 ("Price", "e", (4, 4)),
@@ -218,122 +326,133 @@ class FundingMonitor:
         )
         self.status_label.grid(row=row_idx, column=0, columnspan=5, pady=(2, 6))
 
-    def _refresh(self):
+    def _refresh_funding(self):
+        """Poll funding rates via HTTP every 15s."""
         try:
-            print(f"[{datetime.now():%H:%M:%S}] Fetching...", flush=True)
-            results = fetch_all_rates(self.pairs)
-            print(f"[{datetime.now():%H:%M:%S}] Got: {results}", flush=True)
-            self._update_ui(results)
+            print(f"[{datetime.now():%H:%M:%S}] Fetching funding rates...", flush=True)
+            results = fetch_all_funding(self.pairs)
+            for sym, exchanges in results.items():
+                for ex, data in exchanges.items():
+                    self.funding_data[(sym, ex)] = data
+            self._update_rates()
+            self._check_aster_alert()
+            now = datetime.now().strftime("%H:%M:%S")
+            self.status_label.config(text=f"Rate updated: {now}")
+            print(f"[{datetime.now():%H:%M:%S}] Funding rates updated", flush=True)
         except Exception:
             traceback.print_exc()
-        self.root.after(self.interval, self._refresh)
+        self.root.after(self.funding_interval, self._refresh_funding)
 
-    def _update_ui(self, results: dict):
+    def _update_rates(self):
+        """Update only the Rate column from funding_data."""
+        for pair in self.pairs:
+            sym = pair["symbol"]
+
+            # Sort by rate for row ordering
+            rows = []
+            for ex in pair["exchanges"]:
+                rate = self.funding_data.get((sym, ex), {}).get("rate")
+                rows.append((ex, rate))
+            rows.sort(key=lambda r: (r[1] is None, r[1] if r[1] is not None else 0))
+
+            grid_rows = sorted(
+                self.labels[(sym, ex)]["row"] for ex in pair["exchanges"]
+            )
+
+            for i, (ex, rate) in enumerate(rows):
+                info = self.labels[(sym, ex)]
+                target_row = grid_rows[i]
+                for key in ("name", "price", "lag", "premium", "rate"):
+                    info[key].grid_configure(row=target_row)
+
+                if rate is not None:
+                    pct = rate * 100
+                    info["rate"].config(
+                        text=f"{pct:+.4f}%",
+                        fg=self.GREEN if rate >= 0 else self.RED,
+                    )
+                else:
+                    info["rate"].config(text="N/A", fg="#555555")
+
+    def _update_prices(self):
+        """Update Price, Lag, and vs Aster columns from WebSocket data."""
         try:
             for pair in self.pairs:
                 sym = pair["symbol"]
-                exchange_data = results.get(sym, {})
 
-                rows = []
+                # Get aster price
+                aster_data = self.price_mgr.prices.get((sym, "aster"))
+                aster_price = aster_data["price"] if aster_data else None
+
+                # Find max time for lag calc
+                all_times = []
                 for ex in pair["exchanges"]:
-                    data = exchange_data.get(ex, {})
-                    rate = data.get("rate")
-                    price = data.get("price")
-                    price_time = data.get("price_time")
-                    rows.append((ex, rate, price, price_time))
-
-                rows.sort(key=lambda r: (r[1] is None, r[1] if r[1] is not None else 0))
-
-                grid_rows = sorted(
-                    self.labels[(sym, ex)]["row"] for ex in pair["exchanges"]
-                )
-
-                # Get aster price as baseline for premium calc
-                aster_price = exchange_data.get("aster", {}).get("price")
-
-                # Find the most recent price_time as baseline
-                all_times = [
-                    exchange_data.get(ex, {}).get("price_time")
-                    for ex in pair["exchanges"]
-                ]
-                all_times = [t for t in all_times if t is not None]
+                    d = self.price_mgr.prices.get((sym, ex))
+                    if d and d.get("price_time"):
+                        all_times.append(d["price_time"])
                 max_time = max(all_times) if all_times else None
 
-                for i, (ex, rate, price, price_time) in enumerate(rows):
+                for ex in pair["exchanges"]:
                     info = self.labels[(sym, ex)]
-                    target_row = grid_rows[i]
+                    ws_data = self.price_mgr.prices.get((sym, ex))
 
-                    info["name"].grid_configure(row=target_row)
-                    info["price"].grid_configure(row=target_row)
-                    info["lag"].grid_configure(row=target_row)
-                    info["premium"].grid_configure(row=target_row)
-                    info["rate"].grid_configure(row=target_row)
+                    if ws_data:
+                        price = ws_data["price"]
+                        price_time = ws_data["price_time"]
 
-                    if price is not None:
                         info["price"].config(text=f"{price:.4f}", fg=self.FG)
-                    else:
-                        info["price"].config(text="N/A", fg="#555555")
 
-                    # Lag vs newest price
-                    if price_time is not None and max_time is not None:
-                        lag_ms = max_time - price_time
-                        if lag_ms == 0:
-                            info["lag"].config(text="0ms", fg="#555555")
+                        # Lag
+                        if max_time is not None and price_time is not None:
+                            lag_ms = max_time - price_time
+                            if lag_ms == 0:
+                                info["lag"].config(text="0ms", fg="#555555")
+                            else:
+                                info["lag"].config(text=f"+{lag_ms}ms", fg="#888888")
                         else:
-                            info["lag"].config(text=f"+{lag_ms}ms", fg="#888888")
+                            info["lag"].config(text="--", fg="#555555")
+
+                        # Premium vs Aster
+                        if ex == "aster":
+                            info["premium"].config(text="--", fg="#555555")
+                        elif aster_price is not None and aster_price != 0:
+                            diff = price - aster_price
+                            prem = diff / aster_price * 100
+                            info["premium"].config(
+                                text=f"{prem:+.2f}% / {diff:+.4f}",
+                                fg=self.GREEN if prem >= 0 else self.RED,
+                            )
+                        else:
+                            info["premium"].config(text="N/A", fg="#555555")
                     else:
+                        info["price"].config(text="...", fg=self.FG)
                         info["lag"].config(text="--", fg="#555555")
-
-                    # Premium vs Aster
-                    if ex == "aster":
                         info["premium"].config(text="--", fg="#555555")
-                    elif price is not None and aster_price is not None and aster_price != 0:
-                        prem = (price - aster_price) / aster_price * 100
-                        info["premium"].config(
-                            text=f"{prem:+.2f}%",
-                            fg=self.GREEN if prem >= 0 else self.RED,
-                        )
-                    else:
-                        info["premium"].config(text="N/A", fg="#555555")
-
-                    if rate is not None:
-                        pct = rate * 100
-                        info["rate"].config(
-                            text=f"{pct:+.4f}%",
-                            fg=self.GREEN if rate >= 0 else self.RED,
-                        )
-                    else:
-                        info["rate"].config(text="N/A", fg="#555555")
-
-            # Check if aster has the lowest rate for any pair
-            aster_lowest = False
-            for pair in self.pairs:
-                sym = pair["symbol"]
-                if "aster" not in pair["exchanges"]:
-                    continue
-                exchange_data = results.get(sym, {})
-                aster_rate = exchange_data.get("aster", {}).get("rate")
-                if aster_rate is None:
-                    continue
-                other_rates = [
-                    exchange_data.get(ex, {}).get("rate")
-                    for ex in pair["exchanges"] if ex != "aster"
-                ]
-                other_rates = [r for r in other_rates if r is not None]
-                if other_rates and aster_rate <= min(other_rates):
-                    aster_lowest = True
-                    break
-
-            if aster_lowest and not self._flashing:
-                self._flashing = True
-                self._alert()
-                print(f"[{datetime.now():%H:%M:%S}] ALERT: Aster has lowest rate!", flush=True)
-
-            now = datetime.now().strftime("%H:%M:%S")
-            self.status_label.config(text=f"Updated: {now}")
-            print(f"[{datetime.now():%H:%M:%S}] UI updated", flush=True)
         except Exception:
             traceback.print_exc()
+
+    def _check_aster_alert(self):
+        aster_lowest = False
+        for pair in self.pairs:
+            sym = pair["symbol"]
+            if "aster" not in pair["exchanges"]:
+                continue
+            aster_rate = self.funding_data.get((sym, "aster"), {}).get("rate")
+            if aster_rate is None:
+                continue
+            other_rates = [
+                self.funding_data.get((sym, ex), {}).get("rate")
+                for ex in pair["exchanges"] if ex != "aster"
+            ]
+            other_rates = [r for r in other_rates if r is not None]
+            if other_rates and aster_rate <= min(other_rates):
+                aster_lowest = True
+                break
+
+        if aster_lowest and not self._flashing:
+            self._flashing = True
+            self._alert()
+            print(f"[{datetime.now():%H:%M:%S}] ALERT: Aster has lowest rate!", flush=True)
 
     def _alert(self):
         subprocess.Popen(["afplay", "/System/Library/Sounds/Glass.aiff"])
