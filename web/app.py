@@ -156,20 +156,21 @@ def query_spread_ohlcv(base: str, target: str, symbol: str, period: str,
     for ts in common_ts:
         b = base_by_ts[ts]
         t = target_by_ts[ts]
-        # Use same-type price diff to avoid cross-extreme artifacts
-        spread_open = t["open"] - b["open"]
-        spread_high = t["high"] - b["high"]
-        spread_low = t["low"] - b["low"]
-        spread_close = t["close"] - b["close"]
-        # Ensure high >= low
+        # Spread as percentage: (target - base) / base * 100
+        if b["open"] == 0 or b["high"] == 0 or b["low"] == 0 or b["close"] == 0:
+            continue
+        spread_open = (t["open"] - b["open"]) / b["open"] * 100
+        spread_high = (t["high"] - b["high"]) / b["high"] * 100
+        spread_low = (t["low"] - b["low"]) / b["low"] * 100
+        spread_close = (t["close"] - b["close"]) / b["close"] * 100
         actual_high = max(spread_open, spread_high, spread_low, spread_close)
         actual_low = min(spread_open, spread_high, spread_low, spread_close)
         result.append({
             "timestamp": ts,
-            "open": spread_open,
-            "high": actual_high,
-            "low": actual_low,
-            "close": spread_close,
+            "open": round(spread_open, 4),
+            "high": round(actual_high, 4),
+            "low": round(actual_low, 4),
+            "close": round(spread_close, 4),
         })
     return result
 
