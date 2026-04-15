@@ -37,9 +37,10 @@ def fetch_binance_like(exchange: str, symbol: str) -> dict:
         return {
             "rate": float(data["lastFundingRate"]),
             "price": float(data["markPrice"]),
+            "price_time": int(data["time"]),
         }
     except Exception as e:
-        return {"rate": None, "price": None, "error": str(e)}
+        return {"rate": None, "price": None, "price_time": None, "error": str(e)}
 
 
 def _okx_get(urls: list, params: dict) -> requests.Response:
@@ -67,9 +68,9 @@ def fetch_okx(symbol: str) -> dict:
         ticker = resp2.json()["data"][0]
         price = float(ticker["last"])
 
-        return {"rate": rate, "price": price}
+        return {"rate": rate, "price": price, "price_time": int(ticker["ts"])}
     except Exception as e:
-        return {"rate": None, "price": None, "error": str(e)}
+        return {"rate": None, "price": None, "price_time": None, "error": str(e)}
 
 
 def fetch_rate(exchange: str, symbol: str) -> dict:
@@ -153,13 +154,14 @@ class FundingMonitor:
                 self.root, text=sym, font=("Helvetica Neue", 11),
                 bg=self.BG, fg=self.HEADER_FG,
             )
-            sym_label.grid(row=row_idx, column=0, columnspan=4, sticky="w", padx=8, pady=(6, 2))
+            sym_label.grid(row=row_idx, column=0, columnspan=5, sticky="w", padx=8, pady=(6, 2))
             row_idx += 1
 
             # Column headers
             for col, (header, anchor, px) in enumerate([
                 ("", "w", (14, 4)),
                 ("Price", "e", (4, 4)),
+                ("Lag", "e", (4, 4)),
                 ("vs Aster", "e", (4, 4)),
                 ("Rate", "e", (4, 8)),
             ]):
@@ -182,21 +184,28 @@ class FundingMonitor:
                 )
                 price_label.grid(row=row_idx, column=1, sticky="e", padx=(4, 4))
 
+                lag_label = tk.Label(
+                    self.root, text="", font=("Menlo", 9),
+                    bg=self.BG, fg="#555555", anchor="e",
+                )
+                lag_label.grid(row=row_idx, column=2, sticky="e", padx=(4, 4))
+
                 premium_label = tk.Label(
                     self.root, text="", font=("Menlo", 10),
                     bg=self.BG, fg=self.FG, anchor="e",
                 )
-                premium_label.grid(row=row_idx, column=2, sticky="e", padx=(4, 4))
+                premium_label.grid(row=row_idx, column=3, sticky="e", padx=(4, 4))
 
                 rate_label = tk.Label(
                     self.root, text="...", font=("Menlo", 10),
                     bg=self.BG, fg=self.FG, anchor="e",
                 )
-                rate_label.grid(row=row_idx, column=3, sticky="e", padx=(4, 8))
+                rate_label.grid(row=row_idx, column=4, sticky="e", padx=(4, 8))
 
                 self.labels[(sym, ex)] = {
                     "name": name_label,
                     "price": price_label,
+                    "lag": lag_label,
                     "premium": premium_label,
                     "rate": rate_label,
                     "row": row_idx,
@@ -207,7 +216,7 @@ class FundingMonitor:
             self.root, text="", font=("Helvetica Neue", 8),
             bg=self.BG, fg="#555555",
         )
-        self.status_label.grid(row=row_idx, column=0, columnspan=4, pady=(2, 6))
+        self.status_label.grid(row=row_idx, column=0, columnspan=5, pady=(2, 6))
 
     def _refresh(self):
         try:
@@ -230,7 +239,8 @@ class FundingMonitor:
                     data = exchange_data.get(ex, {})
                     rate = data.get("rate")
                     price = data.get("price")
-                    rows.append((ex, rate, price))
+                    price_time = data.get("price_time")
+                    rows.append((ex, rate, price, price_time))
 
                 rows.sort(key=lambda r: (r[1] is None, r[1] if r[1] is not None else 0))
 
@@ -241,12 +251,21 @@ class FundingMonitor:
                 # Get aster price as baseline for premium calc
                 aster_price = exchange_data.get("aster", {}).get("price")
 
-                for i, (ex, rate, price) in enumerate(rows):
+                # Find the most recent price_time as baseline
+                all_times = [
+                    exchange_data.get(ex, {}).get("price_time")
+                    for ex in pair["exchanges"]
+                ]
+                all_times = [t for t in all_times if t is not None]
+                max_time = max(all_times) if all_times else None
+
+                for i, (ex, rate, price, price_time) in enumerate(rows):
                     info = self.labels[(sym, ex)]
                     target_row = grid_rows[i]
 
                     info["name"].grid_configure(row=target_row)
                     info["price"].grid_configure(row=target_row)
+                    info["lag"].grid_configure(row=target_row)
                     info["premium"].grid_configure(row=target_row)
                     info["rate"].grid_configure(row=target_row)
 
@@ -254,6 +273,18 @@ class FundingMonitor:
                         info["price"].config(text=f"{price:.4f}", fg=self.FG)
                     else:
                         info["price"].config(text="N/A", fg="#555555")
+
+                    # Lag vs newest price
+                    if price_time is not None and max_time is not None:
+                        lag_s = (max_time - price_time) / 1000
+                        if lag_s < 1:
+                            info["lag"].config(text="0s", fg="#555555")
+                        elif lag_s < 60:
+                            info["lag"].config(text=f"+{lag_s:.0f}s", fg="#888888")
+                        else:
+                            info["lag"].config(text=f"+{lag_s/60:.0f}m", fg="#cc8800")
+                    else:
+                        info["lag"].config(text="--", fg="#555555")
 
                     # Premium vs Aster
                     if ex == "aster":
