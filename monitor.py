@@ -153,16 +153,20 @@ class FundingMonitor:
                 self.root, text=sym, font=("Helvetica Neue", 11),
                 bg=self.BG, fg=self.HEADER_FG,
             )
-            sym_label.grid(row=row_idx, column=0, columnspan=3, sticky="w", padx=8, pady=(6, 2))
+            sym_label.grid(row=row_idx, column=0, columnspan=4, sticky="w", padx=8, pady=(6, 2))
             row_idx += 1
 
             # Column headers
-            for col, header in enumerate(["", "Price", "Rate"]):
+            for col, (header, anchor, px) in enumerate([
+                ("", "w", (14, 4)),
+                ("Price", "e", (4, 4)),
+                ("vs Aster", "e", (4, 4)),
+                ("Rate", "e", (4, 8)),
+            ]):
                 tk.Label(
                     self.root, text=header, font=("Menlo", 9),
-                    bg=self.BG, fg="#666666", anchor="e" if col > 0 else "w",
-                ).grid(row=row_idx, column=col, sticky="e" if col > 0 else "w",
-                       padx=(14, 4) if col == 0 else (4, 8))
+                    bg=self.BG, fg="#666666", anchor=anchor,
+                ).grid(row=row_idx, column=col, sticky=anchor, padx=px)
             row_idx += 1
 
             for ex in pair["exchanges"]:
@@ -178,15 +182,22 @@ class FundingMonitor:
                 )
                 price_label.grid(row=row_idx, column=1, sticky="e", padx=(4, 4))
 
+                premium_label = tk.Label(
+                    self.root, text="", font=("Menlo", 10),
+                    bg=self.BG, fg=self.FG, anchor="e",
+                )
+                premium_label.grid(row=row_idx, column=2, sticky="e", padx=(4, 4))
+
                 rate_label = tk.Label(
                     self.root, text="...", font=("Menlo", 10),
                     bg=self.BG, fg=self.FG, anchor="e",
                 )
-                rate_label.grid(row=row_idx, column=2, sticky="e", padx=(4, 8))
+                rate_label.grid(row=row_idx, column=3, sticky="e", padx=(4, 8))
 
                 self.labels[(sym, ex)] = {
                     "name": name_label,
                     "price": price_label,
+                    "premium": premium_label,
                     "rate": rate_label,
                     "row": row_idx,
                 }
@@ -196,7 +207,7 @@ class FundingMonitor:
             self.root, text="", font=("Helvetica Neue", 8),
             bg=self.BG, fg="#555555",
         )
-        self.status_label.grid(row=row_idx, column=0, columnspan=3, pady=(2, 6))
+        self.status_label.grid(row=row_idx, column=0, columnspan=4, pady=(2, 6))
 
     def _refresh(self):
         try:
@@ -227,18 +238,34 @@ class FundingMonitor:
                     self.labels[(sym, ex)]["row"] for ex in pair["exchanges"]
                 )
 
+                # Get aster price as baseline for premium calc
+                aster_price = exchange_data.get("aster", {}).get("price")
+
                 for i, (ex, rate, price) in enumerate(rows):
                     info = self.labels[(sym, ex)]
                     target_row = grid_rows[i]
 
                     info["name"].grid_configure(row=target_row)
                     info["price"].grid_configure(row=target_row)
+                    info["premium"].grid_configure(row=target_row)
                     info["rate"].grid_configure(row=target_row)
 
                     if price is not None:
                         info["price"].config(text=f"{price:.4f}", fg=self.FG)
                     else:
                         info["price"].config(text="N/A", fg="#555555")
+
+                    # Premium vs Aster
+                    if ex == "aster":
+                        info["premium"].config(text="--", fg="#555555")
+                    elif price is not None and aster_price is not None and aster_price != 0:
+                        prem = (price - aster_price) / aster_price * 100
+                        info["premium"].config(
+                            text=f"{prem:+.2f}%",
+                            fg=self.GREEN if prem >= 0 else self.RED,
+                        )
+                    else:
+                        info["premium"].config(text="N/A", fg="#555555")
 
                     if rate is not None:
                         pct = rate * 100
