@@ -382,40 +382,41 @@ class FundingMonitor:
         self.rate_status.grid(row=row_idx, column=0, columnspan=5, sticky="w", padx=8, pady=(0, 2))
         row_idx += 1
 
-        # Toggle buttons for muting alerts
-        btn_frame = tk.Frame(self.root, bg=self.BG)
-        btn_frame.grid(row=row_idx, column=0, columnspan=5, sticky="w", padx=8, pady=(0, 6))
+        # Toggle buttons for muting alerts per exchange
+        # {(exchange, action): muted}
+        self._mute = {}
+        self._mute_btns = {}
 
-        self._mute_close = False
-        self._mute_open = False
+        for ex_name in ["BN", "OKX"]:
+            btn_frame = tk.Frame(self.root, bg=self.BG)
+            btn_frame.grid(row=row_idx, column=0, columnspan=5, sticky="w", padx=8, pady=(0, 0))
+            row_idx += 1
 
-        self.btn_close = tk.Label(
-            btn_frame, text="[平仓提醒: ON]", font=("Menlo", 8),
-            bg=self.BG, fg=self.GREEN, cursor="hand2",
-        )
-        self.btn_close.pack(side="left", padx=(0, 8))
-        self.btn_close.bind("<Button-1>", self._toggle_close_alert)
+            tk.Label(
+                btn_frame, text=f"{ex_name}:", font=("Menlo", 8),
+                bg=self.BG, fg="#666666",
+            ).pack(side="left")
 
-        self.btn_open = tk.Label(
-            btn_frame, text="[开仓提醒: ON]", font=("Menlo", 8),
-            bg=self.BG, fg=self.GREEN, cursor="hand2",
-        )
-        self.btn_open.pack(side="left")
-        self.btn_open.bind("<Button-1>", self._toggle_open_alert)
+            for action in ["平仓", "开仓"]:
+                key = (ex_name.lower(), action)
+                self._mute[key] = False
 
-    def _toggle_close_alert(self, event=None):
-        self._mute_close = not self._mute_close
-        if self._mute_close:
-            self.btn_close.config(text="[平仓提醒: OFF]", fg=self.RED)
+                btn = tk.Label(
+                    btn_frame, text=f"[{action}: ON]", font=("Menlo", 8),
+                    bg=self.BG, fg=self.GREEN, cursor="hand2",
+                )
+                btn.pack(side="left", padx=(4, 0))
+                btn.bind("<Button-1>", lambda e, k=key: self._toggle_mute(k))
+                self._mute_btns[key] = btn
+
+    def _toggle_mute(self, key):
+        self._mute[key] = not self._mute[key]
+        ex_name, action = key
+        btn = self._mute_btns[key]
+        if self._mute[key]:
+            btn.config(text=f"[{action}: OFF]", fg=self.RED)
         else:
-            self.btn_close.config(text="[平仓提醒: ON]", fg=self.GREEN)
-
-    def _toggle_open_alert(self, event=None):
-        self._mute_open = not self._mute_open
-        if self._mute_open:
-            self.btn_open.config(text="[开仓提醒: OFF]", fg=self.RED)
-        else:
-            self.btn_open.config(text="[开仓提醒: ON]", fg=self.GREEN)
+            btn.config(text=f"[{action}: ON]", fg=self.GREEN)
 
     def _refresh_funding(self):
         """Poll funding rates via HTTP every 15s."""
@@ -564,12 +565,11 @@ class FundingMonitor:
                     alerts.append((key, label, diff, cnt, color, action))
 
         # Filter by mute state
-        def is_muted(key):
-            if "close" in key and self._mute_close:
-                return True
-            if "open" in key and self._mute_open:
-                return True
-            return False
+        def is_muted(rule_key):
+            # rule_key like "bn_close", "okx_open"
+            ex = "bn" if rule_key.startswith("bn") else "okx"
+            action = "平仓" if "close" in rule_key else "开仓"
+            return self._mute.get((ex, action), False)
 
         active = [a for a in alerts if not is_muted(a[0])]
         fired = [a for a in active if a[3] >= 5]
