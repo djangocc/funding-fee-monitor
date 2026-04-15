@@ -379,7 +379,43 @@ class FundingMonitor:
             self.root, text="Rate: --", font=("Menlo", 8),
             bg=self.BG, fg="#555555", anchor="w",
         )
-        self.rate_status.grid(row=row_idx, column=0, columnspan=5, sticky="w", padx=8, pady=(0, 6))
+        self.rate_status.grid(row=row_idx, column=0, columnspan=5, sticky="w", padx=8, pady=(0, 2))
+        row_idx += 1
+
+        # Toggle buttons for muting alerts
+        btn_frame = tk.Frame(self.root, bg=self.BG)
+        btn_frame.grid(row=row_idx, column=0, columnspan=5, sticky="w", padx=8, pady=(0, 6))
+
+        self._mute_close = False
+        self._mute_open = False
+
+        self.btn_close = tk.Label(
+            btn_frame, text="[平仓提醒: ON]", font=("Menlo", 8),
+            bg=self.BG, fg=self.GREEN, cursor="hand2",
+        )
+        self.btn_close.pack(side="left", padx=(0, 8))
+        self.btn_close.bind("<Button-1>", self._toggle_close_alert)
+
+        self.btn_open = tk.Label(
+            btn_frame, text="[开仓提醒: ON]", font=("Menlo", 8),
+            bg=self.BG, fg=self.GREEN, cursor="hand2",
+        )
+        self.btn_open.pack(side="left")
+        self.btn_open.bind("<Button-1>", self._toggle_open_alert)
+
+    def _toggle_close_alert(self, event=None):
+        self._mute_close = not self._mute_close
+        if self._mute_close:
+            self.btn_close.config(text="[平仓提醒: OFF]", fg=self.RED)
+        else:
+            self.btn_close.config(text="[平仓提醒: ON]", fg=self.GREEN)
+
+    def _toggle_open_alert(self, event=None):
+        self._mute_open = not self._mute_open
+        if self._mute_open:
+            self.btn_open.config(text="[开仓提醒: OFF]", fg=self.RED)
+        else:
+            self.btn_open.config(text="[开仓提醒: ON]", fg=self.GREEN)
 
     def _refresh_funding(self):
         """Poll funding rates via HTTP every 15s."""
@@ -527,9 +563,17 @@ class FundingMonitor:
                 if cnt > 0:
                     alerts.append((key, label, diff, cnt, color, action))
 
-        # Find highest priority triggered alert (5x first, then highest count)
-        fired = [a for a in alerts if a[3] >= 5]
-        pending = [a for a in alerts if 0 < a[3] < 5]
+        # Filter by mute state
+        def is_muted(key):
+            if "close" in key and self._mute_close:
+                return True
+            if "open" in key and self._mute_open:
+                return True
+            return False
+
+        active = [a for a in alerts if not is_muted(a[0])]
+        fired = [a for a in active if a[3] >= 5]
+        pending = [a for a in active if 0 < a[3] < 5]
 
         if fired:
             # Show the first fired alert
