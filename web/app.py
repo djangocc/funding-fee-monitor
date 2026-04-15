@@ -140,71 +140,28 @@ from(bucket: "{INFLUX_BUCKET}")
     return result
 
 
-def _query_mid_series(exchange: str, symbol: str, period: str,
-                      start: Optional[str] = None, end: Optional[str] = None) -> dict:
-    """Query mid prices aggregated per window. Returns {timestamp_ms: [values]}."""
-    window = PERIOD_MAP.get(period, "1m")
-    range_start = start or DEFAULT_RANGE.get(period, "-6h")
-    range_end = end or "now()"
-
-    flux = f'''
-from(bucket: "{INFLUX_BUCKET}")
-  |> range(start: {range_start}, stop: {range_end})
-  |> filter(fn: (r) => r._measurement == "price")
-  |> filter(fn: (r) => r.exchange == "{exchange}")
-  |> filter(fn: (r) => r.symbol == "{symbol}")
-  |> filter(fn: (r) => r._field == "mid")
-  |> window(every: {window})
-'''
-    tables = query_api.query(flux)
-    # Group values by window start time
-    windows = {}
-    for table in tables:
-        for record in table.records:
-            win_start = int(record.values["_start"].timestamp() * 1000)
-            val = record.get_value()
-            if val is not None:
-                windows.setdefault(win_start, []).append(val)
-    return windows
-
-
 def query_spread_ohlcv(base: str, target: str, symbol: str, period: str,
                        start: Optional[str] = None, end: Optional[str] = None) -> list:
-    """Query spread (target - base) as OHLCV by computing in Python."""
-    base_windows = _query_mid_series(base, symbol, period, start, end)
-    target_windows = _query_mid_series(target, symbol, period, start, end)
+    """Query spread (target - base) as OHLCV by querying both exchanges and computing in Python."""
+    base_ohlcv = query_ohlcv(base, symbol, period, start, end)
+    target_ohlcv = query_ohlcv(target, symbol, period, start, end)
 
-    common_ts = sorted(set(base_windows.keys()) & set(target_windows.keys()))
+    # Index by timestamp
+    base_by_ts = {bar["timestamp"]: bar for bar in base_ohlcv}
+    target_by_ts = {bar["timestamp"]: bar for bar in target_ohlcv}
+
+    common_ts = sorted(set(base_by_ts.keys()) & set(target_by_ts.keys()))
 
     result = []
     for ts in common_ts:
-        base_vals = base_windows[ts]
-        target_vals = target_windows[ts]
-        # Compute spread per tick pair (use mean of each, then diff)
-        base_mean = sum(base_vals) / len(base_vals)
-        target_mean = sum(target_vals) / len(target_vals)
-
-        # For OHLC: compute spread at first, max, min, last
-        base_first, base_last = base_vals[0], base_vals[-1]
-        target_first, target_last = target_vals[0], target_vals[-1]
-
-        spread_open = target_first - base_first
-        spread_close = target_last - base_last
-
-        # For high/low, compute all pairwise spreads using means
-        spread_mid = target_mean - base_mean
-        # Simple approach: use per-tick means for OHLC
-        spreads_all = [target_mean - base_mean]
-        # Also compute extremes
-        spread_high = max(target_vals) - min(base_vals)  # max possible spread
-        spread_low = min(target_vals) - max(base_vals)    # min possible spread
-
+        b = base_by_ts[ts]
+        t = target_by_ts[ts]
         result.append({
             "timestamp": ts,
-            "open": spread_open,
-            "high": spread_high,
-            "low": spread_low,
-            "close": spread_close,
+            "open": t["open"] - b["open"],
+            "high": t["high"] - b["low"],     # max spread
+            "low": t["low"] - b["high"],       # min spread
+            "close": t["close"] - b["close"],
         })
     return result
 
