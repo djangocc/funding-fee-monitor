@@ -352,6 +352,13 @@ class FundingMonitor:
                 }
                 row_idx += 1
 
+        self.alert_label = tk.Label(
+            self.root, text="", font=("Menlo", 9, "bold"),
+            bg=self.BG, fg="#ff6666", anchor="w",
+        )
+        self.alert_label.grid(row=row_idx, column=0, columnspan=5, sticky="w", padx=8, pady=(4, 0))
+        row_idx += 1
+
         self.price_status = tk.Label(
             self.root, text="Price: --", font=("Menlo", 8),
             bg=self.BG, fg="#555555", anchor="w",
@@ -468,10 +475,41 @@ class FundingMonitor:
                         info["lag"].config(text="--", fg="#555555")
                         info["premium"].config(text="--", fg="#555555")
 
+            # Check BN vs Aster price spread
+            self._check_price_spread()
+
             now = datetime.now().strftime("%H:%M:%S")
             self.price_status.config(text=f"Price: {now}")
         except Exception:
             traceback.print_exc()
+
+    def _check_price_spread(self):
+        """Alert when abs(binance - aster) price diff > 0.1."""
+        for pair in self.pairs:
+            sym = pair["symbol"]
+            if "aster" not in pair["exchanges"] or "binance" not in pair["exchanges"]:
+                continue
+            aster_data = self.price_mgr.prices.get((sym, "aster"))
+            bn_data = self.price_mgr.prices.get((sym, "binance"))
+            if not aster_data or not bn_data:
+                continue
+
+            diff = bn_data["price"] - aster_data["price"]
+            if abs(diff) > 0.1:
+                self.alert_label.config(
+                    text=f"BN-Aster spread: {diff:+.4f}",
+                    fg="#ff6666",
+                )
+                if not self._flashing:
+                    self._flashing = True
+                    subprocess.Popen(["afplay", "/System/Library/Sounds/Ping.aiff"])
+                    self._flash_count = 0
+                    self._flash()
+                    print(f"[{datetime.now():%H:%M:%S}] ALERT: BN-Aster spread {diff:+.4f}", flush=True)
+                return
+
+        # Clear alert when spread is normal
+        self.alert_label.config(text="")
 
     def _check_aster_alert(self):
         aster_lowest = False
