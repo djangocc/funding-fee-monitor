@@ -304,7 +304,7 @@ class FundingMonitor:
                 self.root, text=sym, font=("Helvetica Neue", 11),
                 bg=self.BG, fg=self.HEADER_FG,
             )
-            sym_label.grid(row=row_idx, column=0, columnspan=5, sticky="w", padx=8, pady=(6, 2))
+            sym_label.grid(row=row_idx, column=0, columnspan=6, sticky="w", padx=8, pady=(6, 2))
             row_idx += 1
 
             for col, (header, anchor, px, w) in enumerate([
@@ -312,13 +312,17 @@ class FundingMonitor:
                 ("Price", "e", (4, 4), COL_WIDTHS["price"]),
                 ("Lag", "e", (4, 4), COL_WIDTHS["lag"]),
                 ("vs Aster", "e", (4, 4), COL_WIDTHS["premium"]),
-                ("Rate", "e", (4, 8), COL_WIDTHS["rate"]),
+                ("Rate", "e", (4, 4), COL_WIDTHS["rate"]),
             ]):
                 tk.Label(
                     self.root, text=header, font=("Menlo", 9), width=w,
                     bg=self.BG, fg="#666666", anchor=anchor,
                 ).grid(row=row_idx, column=col, sticky=anchor, padx=px)
             row_idx += 1
+
+            # Mute buttons dict
+            self._mute = {}
+            self._mute_btns = {}
 
             for ex in pair["exchanges"]:
                 name_label = tk.Label(
@@ -349,7 +353,26 @@ class FundingMonitor:
                     self.root, text="...", font=("Menlo", 10),
                     bg=self.BG, fg=self.FG, anchor="e", width=COL_WIDTHS["rate"],
                 )
-                rate_label.grid(row=row_idx, column=4, sticky="e", padx=(4, 8))
+                rate_label.grid(row=row_idx, column=4, sticky="e", padx=(4, 4))
+
+                # Mute buttons on the row (only for non-aster exchanges)
+                if ex != "aster":
+                    ex_key = "bn" if ex == "binance" else "okx"
+                    btn_frame = tk.Frame(self.root, bg=self.BG)
+                    btn_frame.grid(row=row_idx, column=5, sticky="w", padx=(4, 8))
+
+                    for action in ["平", "开"]:
+                        full_action = "平仓" if action == "平" else "开仓"
+                        key = (ex_key, full_action)
+                        self._mute[key] = False
+
+                        btn = tk.Label(
+                            btn_frame, text=f"[{action}]", font=("Menlo", 8),
+                            bg=self.BG, fg=self.GREEN, cursor="hand2",
+                        )
+                        btn.pack(side="left", padx=(0, 2))
+                        btn.bind("<Button-1>", lambda e, k=key: self._toggle_mute(k))
+                        self._mute_btns[key] = btn
 
                 self.labels[(sym, ex)] = {
                     "name": name_label,
@@ -365,49 +388,21 @@ class FundingMonitor:
             self.root, text="", font=("Menlo", 9, "bold"),
             bg=self.BG, fg="#ff6666", anchor="w",
         )
-        self.alert_label.grid(row=row_idx, column=0, columnspan=5, sticky="w", padx=8, pady=(4, 0))
+        self.alert_label.grid(row=row_idx, column=0, columnspan=6, sticky="w", padx=8, pady=(4, 0))
         row_idx += 1
 
         self.price_status = tk.Label(
             self.root, text="Price: --", font=("Menlo", 8),
             bg=self.BG, fg="#555555", anchor="w",
         )
-        self.price_status.grid(row=row_idx, column=0, columnspan=5, sticky="w", padx=8, pady=(2, 0))
+        self.price_status.grid(row=row_idx, column=0, columnspan=6, sticky="w", padx=8, pady=(2, 0))
         row_idx += 1
 
         self.rate_status = tk.Label(
             self.root, text="Rate: --", font=("Menlo", 8),
             bg=self.BG, fg="#555555", anchor="w",
         )
-        self.rate_status.grid(row=row_idx, column=0, columnspan=5, sticky="w", padx=8, pady=(0, 2))
-        row_idx += 1
-
-        # Toggle buttons for muting alerts per exchange
-        # {(exchange, action): muted}
-        self._mute = {}
-        self._mute_btns = {}
-
-        for ex_name in ["BN", "OKX"]:
-            btn_frame = tk.Frame(self.root, bg=self.BG)
-            btn_frame.grid(row=row_idx, column=0, columnspan=5, sticky="w", padx=8, pady=(0, 0))
-            row_idx += 1
-
-            tk.Label(
-                btn_frame, text=f"{ex_name}:", font=("Menlo", 8),
-                bg=self.BG, fg="#666666",
-            ).pack(side="left")
-
-            for action in ["平仓", "开仓"]:
-                key = (ex_name.lower(), action)
-                self._mute[key] = False
-
-                btn = tk.Label(
-                    btn_frame, text=f"[{action}: ON]", font=("Menlo", 8),
-                    bg=self.BG, fg=self.GREEN, cursor="hand2",
-                )
-                btn.pack(side="left", padx=(4, 0))
-                btn.bind("<Button-1>", lambda e, k=key: self._toggle_mute(k))
-                self._mute_btns[key] = btn
+        self.rate_status.grid(row=row_idx, column=0, columnspan=6, sticky="w", padx=8, pady=(0, 6))
 
     def _toggle_mute(self, key):
         self._mute[key] = not self._mute[key]
