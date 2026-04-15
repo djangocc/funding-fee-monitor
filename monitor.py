@@ -276,13 +276,11 @@ class FundingMonitor:
 
                     # Lag vs newest price
                     if price_time is not None and max_time is not None:
-                        lag_s = (max_time - price_time) / 1000
-                        if lag_s < 1:
-                            info["lag"].config(text="0s", fg="#555555")
-                        elif lag_s < 60:
-                            info["lag"].config(text=f"+{lag_s:.0f}s", fg="#888888")
+                        lag_ms = max_time - price_time
+                        if lag_ms == 0:
+                            info["lag"].config(text="0ms", fg="#555555")
                         else:
-                            info["lag"].config(text=f"+{lag_s/60:.0f}m", fg="#cc8800")
+                            info["lag"].config(text=f"+{lag_ms}ms", fg="#888888")
                     else:
                         info["lag"].config(text="--", fg="#555555")
 
