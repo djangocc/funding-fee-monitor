@@ -140,6 +140,10 @@ class PriceManager:
     def _run_binance_ws(self, symbol: str, exchange: str):
         url = WS_URLS[exchange].format(symbol_lower=symbol.lower())
         sslopt = {"cert_reqs": ssl.CERT_NONE} if exchange == "aster" else {}
+        print(f"[WS {exchange}] Connecting to {url}...", flush=True)
+
+        def on_open(ws):
+            print(f"[WS {exchange}] Connected", flush=True)
 
         def on_message(ws, message):
             try:
@@ -157,14 +161,19 @@ class PriceManager:
         def on_error(ws, error):
             print(f"[WS {exchange}] Error: {error}", flush=True)
 
-        ws = websocket.WebSocketApp(url, on_message=on_message, on_error=on_error)
+        def on_close(ws, code, msg):
+            print(f"[WS {exchange}] Closed: {code} {msg}", flush=True)
+
+        ws = websocket.WebSocketApp(url, on_open=on_open, on_message=on_message, on_error=on_error, on_close=on_close)
         ws.run_forever(sslopt=sslopt)
 
     def _run_okx_ws(self, symbol: str, exchange: str):
         url = WS_URLS["okx"]
         inst_id = symbol_to_okx(symbol)
+        print(f"[WS okx] Connecting to {url} for {inst_id}...", flush=True)
 
         def on_open(ws):
+            print(f"[WS okx] Connected, subscribing to {inst_id}...", flush=True)
             sub = json.dumps({
                 "op": "subscribe",
                 "args": [{"channel": "tickers", "instId": inst_id}],
@@ -190,8 +199,11 @@ class PriceManager:
         def on_error(ws, error):
             print(f"[WS okx] Error: {error}", flush=True)
 
+        def on_close(ws, code, msg):
+            print(f"[WS okx] Closed: {code} {msg}", flush=True)
+
         ws = websocket.WebSocketApp(
-            url, on_open=on_open, on_message=on_message, on_error=on_error,
+            url, on_open=on_open, on_message=on_message, on_error=on_error, on_close=on_close,
         )
         ws.run_forever(sslopt={"cert_reqs": ssl.CERT_NONE})
 
@@ -241,9 +253,20 @@ class FundingMonitor:
         # Funding rate polling
         self.root.after(100, self._refresh_funding)
 
+        # Poll for price updates from WS every 500ms
+        self._price_dirty = False
+        self.root.after(500, self._poll_prices)
+
     def _on_ws_price_update(self):
         """Called from WS threads when a new price arrives."""
-        self.root.after(0, self._update_prices)
+        self._price_dirty = True
+
+    def _poll_prices(self):
+        """Check if WS pushed new prices and update UI."""
+        if self._price_dirty:
+            self._price_dirty = False
+            self._update_prices()
+        self.root.after(500, self._poll_prices)
 
     def _start_drag(self, event):
         self._drag_x = event.x
@@ -255,6 +278,15 @@ class FundingMonitor:
         self.root.geometry(f"+{x}+{y}")
 
     def _build_ui(self):
+        # Fixed column widths (in characters for Menlo font)
+        COL_WIDTHS = {
+            "name": 8,
+            "price": 10,
+            "lag": 8,
+            "premium": 16,
+            "rate": 10,
+        }
+
         row_idx = 0
         for pair in self.pairs:
             sym = pair["symbol"]
@@ -266,15 +298,15 @@ class FundingMonitor:
             sym_label.grid(row=row_idx, column=0, columnspan=5, sticky="w", padx=8, pady=(6, 2))
             row_idx += 1
 
-            for col, (header, anchor, px) in enumerate([
-                ("", "w", (14, 4)),
-                ("Price", "e", (4, 4)),
-                ("Lag", "e", (4, 4)),
-                ("vs Aster", "e", (4, 4)),
-                ("Rate", "e", (4, 8)),
+            for col, (header, anchor, px, w) in enumerate([
+                ("", "w", (14, 4), COL_WIDTHS["name"]),
+                ("Price", "e", (4, 4), COL_WIDTHS["price"]),
+                ("Lag", "e", (4, 4), COL_WIDTHS["lag"]),
+                ("vs Aster", "e", (4, 4), COL_WIDTHS["premium"]),
+                ("Rate", "e", (4, 8), COL_WIDTHS["rate"]),
             ]):
                 tk.Label(
-                    self.root, text=header, font=("Menlo", 9),
+                    self.root, text=header, font=("Menlo", 9), width=w,
                     bg=self.BG, fg="#666666", anchor=anchor,
                 ).grid(row=row_idx, column=col, sticky=anchor, padx=px)
             row_idx += 1
@@ -282,31 +314,31 @@ class FundingMonitor:
             for ex in pair["exchanges"]:
                 name_label = tk.Label(
                     self.root, text=f"{ex}", font=("Menlo", 10),
-                    bg=self.BG, fg=self.FG, anchor="w",
+                    bg=self.BG, fg=self.FG, anchor="w", width=COL_WIDTHS["name"],
                 )
                 name_label.grid(row=row_idx, column=0, sticky="w", padx=(14, 4))
 
                 price_label = tk.Label(
                     self.root, text="...", font=("Menlo", 10),
-                    bg=self.BG, fg=self.FG, anchor="e",
+                    bg=self.BG, fg=self.FG, anchor="e", width=COL_WIDTHS["price"],
                 )
                 price_label.grid(row=row_idx, column=1, sticky="e", padx=(4, 4))
 
                 lag_label = tk.Label(
                     self.root, text="", font=("Menlo", 9),
-                    bg=self.BG, fg="#555555", anchor="e",
+                    bg=self.BG, fg="#555555", anchor="e", width=COL_WIDTHS["lag"],
                 )
                 lag_label.grid(row=row_idx, column=2, sticky="e", padx=(4, 4))
 
                 premium_label = tk.Label(
                     self.root, text="", font=("Menlo", 10),
-                    bg=self.BG, fg=self.FG, anchor="e",
+                    bg=self.BG, fg=self.FG, anchor="e", width=COL_WIDTHS["premium"],
                 )
                 premium_label.grid(row=row_idx, column=3, sticky="e", padx=(4, 4))
 
                 rate_label = tk.Label(
                     self.root, text="...", font=("Menlo", 10),
-                    bg=self.BG, fg=self.FG, anchor="e",
+                    bg=self.BG, fg=self.FG, anchor="e", width=COL_WIDTHS["rate"],
                 )
                 rate_label.grid(row=row_idx, column=4, sticky="e", padx=(4, 8))
 
@@ -320,11 +352,18 @@ class FundingMonitor:
                 }
                 row_idx += 1
 
-        self.status_label = tk.Label(
-            self.root, text="", font=("Helvetica Neue", 8),
-            bg=self.BG, fg="#555555",
+        self.price_status = tk.Label(
+            self.root, text="Price: --", font=("Menlo", 8),
+            bg=self.BG, fg="#555555", anchor="w",
         )
-        self.status_label.grid(row=row_idx, column=0, columnspan=5, pady=(2, 6))
+        self.price_status.grid(row=row_idx, column=0, columnspan=5, sticky="w", padx=8, pady=(2, 0))
+        row_idx += 1
+
+        self.rate_status = tk.Label(
+            self.root, text="Rate: --", font=("Menlo", 8),
+            bg=self.BG, fg="#555555", anchor="w",
+        )
+        self.rate_status.grid(row=row_idx, column=0, columnspan=5, sticky="w", padx=8, pady=(0, 6))
 
     def _refresh_funding(self):
         """Poll funding rates via HTTP every 15s."""
@@ -337,7 +376,7 @@ class FundingMonitor:
             self._update_rates()
             self._check_aster_alert()
             now = datetime.now().strftime("%H:%M:%S")
-            self.status_label.config(text=f"Rate updated: {now}")
+            self.rate_status.config(text=f"Rate: {now}")
             print(f"[{datetime.now():%H:%M:%S}] Funding rates updated", flush=True)
         except Exception:
             traceback.print_exc()
@@ -428,6 +467,9 @@ class FundingMonitor:
                         info["price"].config(text="...", fg=self.FG)
                         info["lag"].config(text="--", fg="#555555")
                         info["premium"].config(text="--", fg="#555555")
+
+            now = datetime.now().strftime("%H:%M:%S")
+            self.price_status.config(text=f"Price: {now}")
         except Exception:
             traceback.print_exc()
 
