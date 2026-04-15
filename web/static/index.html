@@ -169,10 +169,9 @@
       loadSpreadData();
     }
 
-    // WebSocket for real-time updates
-    function connectWS() {
-      // Price WS
-      if (ws) ws.close();
+    // --- WebSocket for real-time price updates ---
+    function connectPriceWS() {
+      if (ws) { ws.onclose = null; ws.close(); }
       ws = new WebSocket(`ws://${location.host}/ws/kline`);
       ws.onopen = () => {
         ws.send(JSON.stringify({
@@ -185,34 +184,22 @@
         const bar = JSON.parse(e.data);
         priceChart.updateData(bar);
       };
-      ws.onclose = () => setTimeout(connectWS, 3000);
-
-      // Spread WS
-      if (wsSpread) wsSpread.close();
-      wsSpread = new WebSocket(`ws://${location.host}/ws/kline`);
-      wsSpread.onopen = () => {
-        // For spread we subscribe to target exchange and compute diff client-side
-        wsSpread.send(JSON.stringify({
-          exchange: currentSpreadTarget,
-          symbol: 'RAVEUSDT',
-          period: currentPeriod,
-        }));
-      };
-      wsSpread.onmessage = (e) => {
-        // Simple approach: just reload spread periodically
+      ws.onclose = (e) => {
+        // Only reconnect if not intentionally closed
+        if (e.code !== 1000) {
+          setTimeout(connectPriceWS, 3000);
+        }
       };
     }
 
-    // Auto-refresh spread every 5 seconds
-    setInterval(() => {
-      loadSpreadData();
-    }, 5000);
+    // Spread uses HTTP polling (needs two exchanges computed server-side)
+    setInterval(() => { loadSpreadData(); }, 5000);
 
     // Event handlers
     document.getElementById('exchange').addEventListener('change', (e) => {
       currentExchange = e.target.value;
-      loadAllData();
-      connectWS();
+      loadPriceData();
+      connectPriceWS();
     });
 
     document.getElementById('spread-target').addEventListener('change', (e) => {
@@ -226,13 +213,13 @@
       e.target.classList.add('active');
       currentPeriod = e.target.dataset.period;
       loadAllData();
-      connectWS();
+      connectPriceWS();
     });
 
     // Init
     initCharts();
     loadAllData();
-    connectWS();
+    connectPriceWS();
   </script>
 </body>
 </html>
