@@ -356,6 +356,7 @@ class FundingMonitor:
                 rate_label.grid(row=row_idx, column=4, sticky="e", padx=(4, 4))
 
                 # Mute buttons on the row (only for non-aster exchanges)
+                btn_frame = None
                 if ex != "aster":
                     ex_key = "bn" if ex == "binance" else "okx"
                     btn_frame = tk.Frame(self.root, bg=self.BG)
@@ -380,6 +381,7 @@ class FundingMonitor:
                     "lag": lag_label,
                     "premium": premium_label,
                     "rate": rate_label,
+                    "btn_frame": btn_frame,
                     "row": row_idx,
                 }
                 row_idx += 1
@@ -451,6 +453,8 @@ class FundingMonitor:
                 target_row = grid_rows[i]
                 for key in ("name", "price", "lag", "premium", "rate"):
                     info[key].grid_configure(row=target_row)
+                if info["btn_frame"] is not None:
+                    info["btn_frame"].grid_configure(row=target_row)
 
                 if rate is not None:
                     pct = rate * 100
