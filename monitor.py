@@ -24,8 +24,8 @@ REQUEST_TIMEOUT = 10
 
 # --- WebSocket endpoints (price only) ---
 WS_URLS = {
-    "aster": "wss://fstream.asterdex.com/ws/{symbol_lower}@markPrice@1s",
-    "binance": "wss://fstream.binance.com/ws/{symbol_lower}@markPrice@1s",
+    "aster": "wss://fstream.asterdex.com/ws/{symbol_lower}@bookTicker",
+    "binance": "wss://fstream.binance.com/ws/{symbol_lower}@bookTicker",
     "okx": "wss://ws.okx.com:8443/ws/v5/public",
 }
 
@@ -148,10 +148,12 @@ class PriceManager:
         def on_message(ws, message):
             try:
                 data = json.loads(message)
-                price = float(data["p"])
+                bid = float(data["b"])
+                ask = float(data["a"])
+                mid = (bid + ask) / 2
                 price_time = int(data["E"])
                 self.prices[(symbol, exchange)] = {
-                    "price": price,
+                    "price": mid,
                     "price_time": price_time,
                 }
                 self.on_price_update()
@@ -273,7 +275,7 @@ class FundingMonitor:
         if self._price_dirty:
             self._price_dirty = False
             self._update_prices()
-        self.root.after(500, self._poll_prices)
+        self.root.after(100, self._poll_prices)
 
     def _start_drag(self, event):
         self._drag_x = event.x
