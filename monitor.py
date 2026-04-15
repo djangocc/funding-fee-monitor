@@ -532,6 +532,8 @@ class FundingMonitor:
         if fired:
             # Show the first fired alert
             key, label, diff, cnt, color, action = fired[0]
+            # Extract exchange from key (e.g. "bn_close" -> "binance", "okx_open" -> "okx")
+            flash_exchange = "binance" if key.startswith("bn") else "okx"
             self.alert_label.config(
                 text=f"!! {action} !! {label}: {diff:+.4f}",
                 fg=color,
@@ -539,8 +541,12 @@ class FundingMonitor:
             if not self._flashing:
                 self._flashing = True
                 subprocess.Popen(["afplay", "/System/Library/Sounds/Ping.aiff"])
-                self._flash_count = 0
-                self._flash()
+                # Flash the specific exchange row
+                for pair in self.pairs:
+                    sym = pair["symbol"]
+                    if flash_exchange in pair["exchanges"]:
+                        flash_color = "#4a1a1a" if "close" in key else "#1a3a1a"
+                        self._flash_row(sym, flash_exchange, flash_color)
                 print(f"[{datetime.now():%H:%M:%S}] ALERT: {action} {label} {diff:+.4f} (5x)", flush=True)
         elif pending:
             # Show highest count pending
@@ -573,32 +579,33 @@ class FundingMonitor:
 
         if aster_lowest and not self._flashing:
             self._flashing = True
-            self._alert()
+            subprocess.Popen(["afplay", "/System/Library/Sounds/Glass.aiff"])
+            for pair in self.pairs:
+                sym = pair["symbol"]
+                if "aster" in pair["exchanges"]:
+                    self._flash_row(sym, "aster", "#4a1a1a")
             print(f"[{datetime.now():%H:%M:%S}] ALERT: Aster has lowest rate!", flush=True)
 
-    def _alert(self):
-        subprocess.Popen(["afplay", "/System/Library/Sounds/Glass.aiff"])
-        self._flash_count = 0
-        self._flash()
+    def _flash_row(self, symbol: str, exchange: str, flash_bg: str):
+        """Flash a specific exchange row."""
+        key = (symbol, exchange)
+        if key not in self.labels:
+            return
+        info = self.labels[key]
+        widgets = [info["name"], info["price"], info["lag"], info["premium"], info["rate"]]
+        self._row_flash_count = 0
+        self._do_row_flash(widgets, flash_bg, 0)
 
-    def _flash(self):
-        if self._flash_count >= 6:
-            self.root.configure(bg=self.BG)
-            self._set_all_bg(self.BG)
+    def _do_row_flash(self, widgets, flash_bg, count):
+        if count >= 6:
+            for w in widgets:
+                w.configure(bg=self.BG)
             self._flashing = False
             return
-        bg = self.ALERT_BG if self._flash_count % 2 == 0 else self.BG
-        self.root.configure(bg=bg)
-        self._set_all_bg(bg)
-        self._flash_count += 1
-        self.root.after(300, self._flash)
-
-    def _set_all_bg(self, bg):
-        for widget in self.root.winfo_children():
-            try:
-                widget.configure(bg=bg)
-            except tk.TclError:
-                pass
+        bg = flash_bg if count % 2 == 0 else self.BG
+        for w in widgets:
+            w.configure(bg=bg)
+        self.root.after(300, lambda: self._do_row_flash(widgets, flash_bg, count + 1))
 
     def run(self):
         self.root.mainloop()
