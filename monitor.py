@@ -225,7 +225,13 @@ class FundingMonitor:
         self.funding_interval = config.get("refresh_interval_seconds", 15) * 1000
         self._flashing = False
         self._flash_count = 0
-        self._spread_alert_count = 0
+        # Spread alert counters: {rule_name: consecutive_count}
+        self._spread_counts = {
+            "bn_close": 0,
+            "okx_close": 0,
+            "bn_open": 0,
+            "okx_open": 0,
+        }
 
         # Latest funding rates: {(symbol, exchange): {"rate": float}}
         self.funding_data = {}
@@ -485,34 +491,67 @@ class FundingMonitor:
             traceback.print_exc()
 
     def _check_price_spread(self):
-        """Alert when abs(binance - aster) price diff > 0.1."""
+        """Check spread rules and alert accordingly."""
+        RULES = [
+            # (key, exchange, condition_fn, threshold_desc, color, action)
+            ("bn_close",  "binance", lambda d: d > -0.1,  "BN-Aster",  "#ff6666", "平仓"),
+            ("okx_close", "okx",     lambda d: d > 0.7,   "OKX-Aster", "#ff6666", "平仓"),
+            ("bn_open",   "binance", lambda d: d < -0.3,  "BN-Aster",  self.GREEN, "开仓"),
+            ("okx_open",  "okx",     lambda d: d < 0.35,  "OKX-Aster", self.GREEN, "开仓"),
+        ]
+
         for pair in self.pairs:
             sym = pair["symbol"]
-            if "aster" not in pair["exchanges"] or "binance" not in pair["exchanges"]:
-                continue
             aster_data = self.price_mgr.prices.get((sym, "aster"))
-            bn_data = self.price_mgr.prices.get((sym, "binance"))
-            if not aster_data or not bn_data:
+            if not aster_data:
                 continue
 
-            diff = bn_data["price"] - aster_data["price"]
-            if diff > -0.1:
-                self._spread_alert_count += 1
-                self.alert_label.config(
-                    text=f"BN-Aster: {diff:+.4f} ({self._spread_alert_count}/5)",
-                    fg="#ff6666" if self._spread_alert_count >= 5 else "#cc8800",
-                )
-                if self._spread_alert_count >= 5 and not self._flashing:
-                    self._flashing = True
-                    subprocess.Popen(["afplay", "/System/Library/Sounds/Ping.aiff"])
-                    self._flash_count = 0
-                    self._flash()
-                    print(f"[{datetime.now():%H:%M:%S}] ALERT: BN-Aster spread {diff:+.4f} (5x)", flush=True)
-                return
+            alerts = []
+            for key, exchange, cond, label, color, action in RULES:
+                if exchange not in pair["exchanges"]:
+                    continue
+                ex_data = self.price_mgr.prices.get((sym, exchange))
+                if not ex_data:
+                    self._spread_counts[key] = 0
+                    continue
 
-        # Clear alert when spread is normal
-        self._spread_alert_count = 0
-        self.alert_label.config(text="")
+                diff = ex_data["price"] - aster_data["price"]
+                if cond(diff):
+                    self._spread_counts[key] += 1
+                else:
+                    self._spread_counts[key] = 0
+
+                cnt = self._spread_counts[key]
+                if cnt > 0:
+                    alerts.append((key, label, diff, cnt, color, action))
+
+        # Find highest priority triggered alert (5x first, then highest count)
+        fired = [a for a in alerts if a[3] >= 5]
+        pending = [a for a in alerts if 0 < a[3] < 5]
+
+        if fired:
+            # Show the first fired alert
+            key, label, diff, cnt, color, action = fired[0]
+            self.alert_label.config(
+                text=f"!! {action} !! {label}: {diff:+.4f}",
+                fg=color,
+            )
+            if not self._flashing:
+                self._flashing = True
+                subprocess.Popen(["afplay", "/System/Library/Sounds/Ping.aiff"])
+                self._flash_count = 0
+                self._flash()
+                print(f"[{datetime.now():%H:%M:%S}] ALERT: {action} {label} {diff:+.4f} (5x)", flush=True)
+        elif pending:
+            # Show highest count pending
+            pending.sort(key=lambda a: -a[3])
+            key, label, diff, cnt, color, action = pending[0]
+            self.alert_label.config(
+                text=f"{label}: {diff:+.4f} ({cnt}/5)",
+                fg="#cc8800",
+            )
+        else:
+            self.alert_label.config(text="")
 
     def _check_aster_alert(self):
         aster_lowest = False
