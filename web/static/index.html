@@ -103,13 +103,31 @@
         styles: {
           grid: { show: true, horizontal: { color: '#222' }, vertical: { color: '#222' } },
           candle: {
-            priceMark: { last: { show: true } },
+            priceMark: {
+              last: {
+                show: true,
+                text: { show: true },
+              },
+            },
             bar: { upColor: '#4ec9b0', downColor: '#f44747', upBorderColor: '#4ec9b0', downBorderColor: '#f44747' },
+            tooltip: {
+              custom: [
+                { title: 'open', value: '{open}%' },
+                { title: 'high', value: '{high}%' },
+                { title: 'low', value: '{low}%' },
+                { title: 'close', value: '{close}%' },
+              ],
+            },
           },
           indicator: { ohlc: { show: false } },
           xAxis: { tickText: { color: '#666' } },
-          yAxis: { tickText: { color: '#666' } },
-        }
+          yAxis: {
+            tickText: { color: '#666' },
+          },
+        },
+        customApi: {
+          formatPrice: (price) => price.toFixed(2) + '%',
+        },
       });
 
       // Add default indicators
