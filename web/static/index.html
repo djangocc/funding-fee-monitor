@@ -86,7 +86,7 @@
         name: 'IDX_PRICE',
         shortName: 'Index',
         figures: [
-          { key: 'index_price', title: 'Index: ', type: 'line',
+          { key: 'index_price', title: '', type: 'line',
             styles: () => ({ color: '#e6b422' }) },
         ],
         calc: (dataList) => dataList.map(d => ({ index_price: d.index_price || null })),
@@ -96,7 +96,7 @@
         name: 'MARK_PRICE',
         shortName: 'Mark',
         figures: [
-          { key: 'mark_price', title: 'Mark: ', type: 'line',
+          { key: 'mark_price', title: '', type: 'line',
             styles: () => ({ color: '#ff66b2' }) },
         ],
         calc: (dataList) => dataList.map(d => ({ mark_price: d.mark_price || null })),
@@ -148,7 +148,11 @@
             priceMark: { last: { show: true } },
             tooltip: {
               custom: [
-                { title: 'Contract', value: '{close}' },
+                { title: 'Contract ', value: '{close}' },
+                { title: 'Mark ', value: '{mark_price}' },
+                { title: 'Index ', value: '{index_price}' },
+                { title: 'Premium ', value: '{premium}%' },
+                { title: 'Rate ', value: '{funding_rate}%' },
               ],
             },
           },
