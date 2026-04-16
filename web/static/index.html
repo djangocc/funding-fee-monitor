@@ -86,10 +86,10 @@
         name: 'IDX_PRICE',
         shortName: 'Index',
         figures: [
-          { key: 'index_price', title: '', type: 'line',
-            styles: () => ({ color: '#e6b422' }) },
+          { key: 'index_price', title: 'Idx: ', type: 'line',
+            styles: () => ({ color: '#ffff00', size: 2 }) },
         ],
-        calc: (dataList) => dataList.map(d => ({ index_price: d.index_price || null })),
+        calc: (dataList) => dataList.map(d => ({ index_price: d.index_price != null ? d.index_price : null })),
       });
 
       klinecharts.registerIndicator({
@@ -197,6 +197,9 @@
         const resp = await fetch(`/api/kline?exchange=${currentExchange}&symbol=RAVEUSDT&period=${currentPeriod}`);
         const json = await resp.json();
         priceChart.applyNewData(json.data);
+        // Re-create indicators after data load to ensure they render
+        priceChart.createIndicator('IDX_PRICE', false, { id: 'candle_pane' });
+        priceChart.createIndicator('MARK_PRICE', false, { id: 'candle_pane' });
       } catch (e) {
         console.error('Failed to load price data:', e);
       }
