@@ -93,6 +93,16 @@
       });
 
       klinecharts.registerIndicator({
+        name: 'MARK_PRICE',
+        shortName: 'Mark',
+        figures: [
+          { key: 'mark_price', title: 'Mark: ', type: 'line',
+            styles: () => ({ color: '#ff66b2' }) },
+        ],
+        calc: (dataList) => dataList.map(d => ({ mark_price: d.mark_price || null })),
+      });
+
+      klinecharts.registerIndicator({
         name: 'PREMIUM',
         shortName: 'Premium%',
         figures: [
@@ -146,6 +156,7 @@
       });
 
       priceChart.createIndicator('IDX_PRICE', false, { id: 'candle_pane' });
+      priceChart.createIndicator('MARK_PRICE', false, { id: 'candle_pane' });
       priceChart.createIndicator('PREMIUM', false, { id: 'premium_pane', height: 80 });
       priceChart.createIndicator('FUNDING', false, { id: 'funding_pane', height: 60 });
 
