@@ -63,7 +63,8 @@
         name: 'CONTRACT_PRICE',
         shortName: 'Contract',
         figures: [
-          { key: 'contract', title: 'Contract: ', type: 'line', styles: { color: '#4ec9b0' } },
+          { key: 'contract', title: 'Contract: ', type: 'line',
+            styles: () => ({ color: '#4ec9b0' }) },
         ],
         calc: (dataList) => dataList.map(d => ({ contract: d.close || null })),
       });
@@ -73,7 +74,8 @@
         name: 'IDX_PRICE',
         shortName: 'Index',
         figures: [
-          { key: 'index_price', title: 'Index: ', type: 'line', styles: { color: '#e6b422' } },
+          { key: 'index_price', title: 'Index: ', type: 'line',
+            styles: () => ({ color: '#e6b422' }) },
         ],
         calc: (dataList) => dataList.map(d => ({ index_price: d.index_price || null })),
       });
@@ -83,7 +85,8 @@
         name: 'PREMIUM',
         shortName: 'Premium%',
         figures: [
-          { key: 'premium', title: 'Premium: ', type: 'line', styles: { color: '#ff6b6b' } },
+          { key: 'premium', title: 'Premium: ', type: 'line',
+            styles: () => ({ color: '#ff6b6b' }) },
         ],
         calc: (dataList) => dataList.map(d => ({ premium: d.premium ?? null })),
       });
@@ -93,7 +96,8 @@
         name: 'FUNDING',
         shortName: 'FundingRate%',
         figures: [
-          { key: 'funding_rate', title: 'Rate: ', type: 'line', styles: { color: '#cc66ff' } },
+          { key: 'funding_rate', title: 'Rate: ', type: 'line',
+            styles: () => ({ color: '#cc66ff' }) },
         ],
         calc: (dataList) => dataList.map(d => ({ funding_rate: d.funding_rate ?? null })),
       });

@@ -218,11 +218,26 @@ async def get_kline(
     data = query_ohlcv(exchange, symbol, period, start, end)
     index_data = query_index_series(exchange, symbol, period, start, end)
 
-    # Merge index data into each bar
+    # Build sorted list of index timestamps for nearest-match lookup
+    index_ts_list = sorted(index_data.keys())
+
+    def find_nearest(ts, ts_list):
+        if not ts_list:
+            return None
+        import bisect
+        pos = bisect.bisect_left(ts_list, ts)
+        candidates = []
+        if pos < len(ts_list):
+            candidates.append(ts_list[pos])
+        if pos > 0:
+            candidates.append(ts_list[pos - 1])
+        return min(candidates, key=lambda t: abs(t - ts))
+
+    # Merge index data into each bar using nearest timestamp
     for bar in data:
         ts = bar["timestamp"]
-        # Find closest index timestamp (within window tolerance)
-        idx = index_data.get(ts, {})
+        nearest_ts = find_nearest(ts, index_ts_list)
+        idx = index_data.get(nearest_ts, {}) if nearest_ts is not None else {}
         mark = idx.get("mark_price")
         index_px = idx.get("index_price")
         funding = idx.get("funding_rate")
