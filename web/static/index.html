@@ -31,7 +31,8 @@
     .chart-section.main { flex: 3; }
     .chart-section.spread { flex: 1; }
     .chart-title { font-size: 11px; padding: 4px 12px; background: #16213e; color: #888; }
-    .chart-wrapper { flex: 1; }
+    .chart-wrapper { flex: 1; position: relative; }
+    canvas.overlay { position: absolute; top: 0; left: 0; pointer-events: none; }
   </style>
 </head>
 <body>
@@ -79,29 +80,9 @@
     let currentPeriod = '1m';
     let priceChart = null;
     let spreadChart = null;
+    let priceData = [];  // cached for overlay drawing
 
-    // --- Register custom indicators ---
     function registerIndicators() {
-      klinecharts.registerIndicator({
-        name: 'IDX_PRICE',
-        shortName: 'Index',
-        figures: [
-          { key: 'index_price', title: 'Idx: ', type: 'line',
-            styles: () => ({ color: '#ffff00', size: 2 }) },
-        ],
-        calc: (dataList) => dataList.map(d => ({ index_price: d.index_price != null ? d.index_price : null })),
-      });
-
-      klinecharts.registerIndicator({
-        name: 'MARK_PRICE',
-        shortName: 'Mark',
-        figures: [
-          { key: 'mark_price', title: '', type: 'line',
-            styles: () => ({ color: '#ff66b2' }) },
-        ],
-        calc: (dataList) => dataList.map(d => ({ mark_price: d.mark_price || null })),
-      });
-
       klinecharts.registerIndicator({
         name: 'PREMIUM',
         shortName: 'Premium%',
@@ -131,7 +112,6 @@
     };
 
     function initCharts() {
-      // --- Price chart (line + index overlay + premium + funding sub-panes) ---
       priceChart = klinecharts.init('price-chart', {
         styles: {
           ...darkStyles,
@@ -159,12 +139,13 @@
         },
       });
 
-      priceChart.createIndicator('IDX_PRICE', false, { id: 'candle_pane' });
-      priceChart.createIndicator('MARK_PRICE', false, { id: 'candle_pane' });
       priceChart.createIndicator('PREMIUM', false, { id: 'premium_pane', height: 80 });
       priceChart.createIndicator('FUNDING', false, { id: 'funding_pane', height: 60 });
 
-      // --- Spread chart (K-line) ---
+      // Subscribe to chart viewport changes to redraw overlay
+      priceChart.subscribeAction('onVisibleRangeChange', drawIndexOverlay);
+      priceChart.subscribeAction('onCrosshairChange', drawIndexOverlay);
+
       spreadChart = klinecharts.init('spread-chart', {
         styles: {
           ...darkStyles,
@@ -189,6 +170,118 @@
       spreadChart.createIndicator('MA', false, { id: 'candle_pane' });
     }
 
+    // --- Canvas overlay for Index Price line ---
+    function drawIndexOverlay() {
+      if (!priceData.length) return;
+
+      var chartEl = document.getElementById('price-chart');
+      var canvases = chartEl.querySelectorAll('canvas');
+      if (!canvases.length) return;
+
+      // Find or create overlay canvas
+      var overlayId = 'index-overlay';
+      var overlay = document.getElementById(overlayId);
+      // Get the main canvas (first one is usually the candle pane)
+      var mainCanvas = canvases[0];
+
+      if (!overlay) {
+        overlay = document.createElement('canvas');
+        overlay.id = overlayId;
+        overlay.className = 'overlay';
+        mainCanvas.parentElement.appendChild(overlay);
+      }
+
+      overlay.width = mainCanvas.width;
+      overlay.height = mainCanvas.height;
+      overlay.style.width = mainCanvas.style.width;
+      overlay.style.height = mainCanvas.style.height;
+
+      var ctx = overlay.getContext('2d');
+      ctx.clearRect(0, 0, overlay.width, overlay.height);
+
+      // Get chart conversion functions
+      var dataList = priceChart.getDataList();
+      if (!dataList.length) return;
+
+      var visibleRange = priceChart.getVisibleRange();
+      var from = visibleRange.from;
+      var to = Math.min(visibleRange.to, dataList.length);
+
+      // Find Y axis range from visible data
+      var minY = Infinity, maxY = -Infinity;
+      for (var i = from; i < to; i++) {
+        var d = dataList[i];
+        if (d.high > maxY) maxY = d.high;
+        if (d.low < minY) minY = d.low;
+        if (d.index_price != null) {
+          if (d.index_price > maxY) maxY = d.index_price;
+          if (d.index_price < minY) minY = d.index_price;
+        }
+      }
+
+      // Get pixel bounds of candle pane (approximate)
+      var dpr = window.devicePixelRatio || 1;
+      var paneHeight = overlay.height * 0.65;  // candle pane is roughly top 65%
+      var leftPad = 0;
+      var rightPad = 80 * dpr;  // Y axis label width
+      var topPad = 30 * dpr;
+      var chartWidth = overlay.width - leftPad - rightPad;
+
+      var yRange = maxY - minY;
+      if (yRange === 0) return;
+
+      function toX(idx) {
+        var barWidth = chartWidth / (to - from);
+        return leftPad + (idx - from) * barWidth + barWidth / 2;
+      }
+      function toY(val) {
+        return topPad + (1 - (val - minY) / yRange) * (paneHeight - topPad * 2);
+      }
+
+      // Draw Index Price line (yellow)
+      ctx.strokeStyle = '#ffff00';
+      ctx.lineWidth = 2 * dpr;
+      ctx.setLineDash([]);
+      ctx.beginPath();
+      var started = false;
+      for (var i = from; i < to; i++) {
+        var d = dataList[i];
+        if (d.index_price == null) continue;
+        var x = toX(i);
+        var y = toY(d.index_price);
+        if (!started) { ctx.moveTo(x, y); started = true; }
+        else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+
+      // Draw Mark Price line (pink dashed)
+      ctx.strokeStyle = '#ff66b2';
+      ctx.lineWidth = 1.5 * dpr;
+      ctx.setLineDash([4 * dpr, 4 * dpr]);
+      ctx.beginPath();
+      started = false;
+      for (var i = from; i < to; i++) {
+        var d = dataList[i];
+        if (d.mark_price == null) continue;
+        var x = toX(i);
+        var y = toY(d.mark_price);
+        if (!started) { ctx.moveTo(x, y); started = true; }
+        else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+
+      // Legend
+      ctx.setLineDash([]);
+      ctx.font = (10 * dpr) + 'px Menlo';
+      var legendY = 14 * dpr;
+      ctx.fillStyle = '#4ec9b0';
+      ctx.fillText('— Contract', 10 * dpr, legendY);
+      ctx.fillStyle = '#ffff00';
+      ctx.fillText('— Index', 120 * dpr, legendY);
+      ctx.fillStyle = '#ff66b2';
+      ctx.fillText('-- Mark', 210 * dpr, legendY);
+    }
+
     // --- Data loading ---
     async function loadPriceData() {
       document.getElementById('price-title').textContent =
@@ -196,10 +289,9 @@
       try {
         const resp = await fetch(`/api/kline?exchange=${currentExchange}&symbol=RAVEUSDT&period=${currentPeriod}`);
         const json = await resp.json();
+        priceData = json.data;
         priceChart.applyNewData(json.data);
-        // Re-create indicators after data load to ensure they render
-        priceChart.createIndicator('IDX_PRICE', false, { id: 'candle_pane' });
-        priceChart.createIndicator('MARK_PRICE', false, { id: 'candle_pane' });
+        setTimeout(drawIndexOverlay, 100);
       } catch (e) {
         console.error('Failed to load price data:', e);
       }
@@ -225,10 +317,13 @@
     // Auto-refresh every 5s
     setInterval(loadAllData, 5000);
 
+    // Redraw overlay on resize
+    window.addEventListener('resize', () => setTimeout(drawIndexOverlay, 200));
+
     // Event handlers
     document.getElementById('exchange').addEventListener('change', (e) => {
       currentExchange = e.target.value;
-      loadPriceData();
+      loadAllData();
     });
 
     document.getElementById('spread-target').addEventListener('change', (e) => {
