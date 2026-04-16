@@ -17,9 +17,15 @@ import traceback
 from collections import defaultdict
 from datetime import datetime, timezone
 
+import requests
 import websocket
 from influxdb_client import InfluxDBClient, Point, WritePrecision
 from influxdb_client.client.write_api import ASYNCHRONOUS
+
+OKX_FUNDING_URLS = [
+    "https://www.okx.com/api/v5/public/funding-rate",
+    "https://www.okx.com/priapi/v5/public/funding-rate",
+]
 
 # --- WebSocket URLs ---
 WS_BOOK_URLS = {
@@ -149,7 +155,42 @@ class PriceCollector:
                     daemon=True,
                 ).start()
 
+        # OKX funding rate HTTP polling thread
+        for pair in self.pairs:
+            if "okx" in pair["exchanges"]:
+                threading.Thread(
+                    target=self._poll_okx_funding_rate,
+                    args=(pair["symbol"],),
+                    daemon=True,
+                ).start()
+
         self._writer_loop()
+
+    def _poll_okx_funding_rate(self, symbol: str):
+        """Poll OKX funding rate via HTTP every 15s."""
+        inst_id = symbol_to_okx(symbol)
+        print(f"[OKX funding] Starting HTTP polling for {inst_id}...", flush=True)
+        while True:
+            try:
+                for url in OKX_FUNDING_URLS:
+                    for verify in (True, False):
+                        try:
+                            resp = requests.get(url, params={"instId": inst_id}, timeout=10, verify=verify)
+                            resp.raise_for_status()
+                            data = resp.json()["data"][0]
+                            self.index_buffer.update(
+                                symbol, "okx",
+                                funding_rate=float(data["fundingRate"]),
+                            )
+                            break
+                        except Exception:
+                            continue
+                    else:
+                        continue
+                    break
+            except Exception:
+                traceback.print_exc()
+            time.sleep(15)
 
     def _run_ws_loop(self, ws_func, symbol, exchange):
         """Reconnect loop wrapper."""
