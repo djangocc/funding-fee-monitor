@@ -24,7 +24,14 @@
     .toolbar .period-group button { min-width: 32px; }
     .toolbar label { font-size: 12px; color: #888; }
 
-    #chart { width: 100%; height: calc(100vh - 44px); }
+    .charts-container {
+      display: flex; flex-direction: column; height: calc(100vh - 44px);
+    }
+    .chart-section { display: flex; flex-direction: column; border-bottom: 1px solid #333; }
+    .chart-section.main { flex: 3; }
+    .chart-section.spread { flex: 1; }
+    .chart-title { font-size: 11px; padding: 4px 12px; background: #16213e; color: #888; }
+    .chart-wrapper { flex: 1; }
   </style>
 </head>
 <body>
@@ -34,6 +41,12 @@
       <option value="aster">Aster</option>
       <option value="binance">Binance</option>
       <option value="okx">OKX</option>
+    </select>
+
+    <label>Spread:</label>
+    <select id="spread-target">
+      <option value="binance">BN - Aster</option>
+      <option value="okx">OKX - Aster</option>
     </select>
 
     <label>Period:</label>
@@ -48,28 +61,27 @@
     </div>
   </div>
 
-  <div id="chart"></div>
+  <div class="charts-container">
+    <div class="chart-section main">
+      <div class="chart-title" id="price-title">Price: RAVEUSDT @ aster [1m]</div>
+      <div class="chart-wrapper" id="price-chart"></div>
+    </div>
+    <div class="chart-section spread">
+      <div class="chart-title" id="spread-title">Spread: binance - aster [1m]</div>
+      <div class="chart-wrapper" id="spread-chart"></div>
+    </div>
+  </div>
 
   <script src="https://unpkg.com/klinecharts@9.8.12/dist/umd/klinecharts.min.js"></script>
   <script>
     let currentExchange = 'aster';
+    let currentSpreadTarget = 'binance';
     let currentPeriod = '1m';
-    let chart = null;
+    let priceChart = null;
+    let spreadChart = null;
 
     // --- Register custom indicators ---
     function registerIndicators() {
-      // Contract mid price line (main pane, replaces candle)
-      klinecharts.registerIndicator({
-        name: 'CONTRACT_PRICE',
-        shortName: 'Contract',
-        figures: [
-          { key: 'contract', title: 'Contract: ', type: 'line',
-            styles: () => ({ color: '#4ec9b0' }) },
-        ],
-        calc: (dataList) => dataList.map(d => ({ contract: d.close || null })),
-      });
-
-      // Index price line (main pane overlay)
       klinecharts.registerIndicator({
         name: 'IDX_PRICE',
         shortName: 'Index',
@@ -80,7 +92,6 @@
         calc: (dataList) => dataList.map(d => ({ index_price: d.index_price || null })),
       });
 
-      // Premium % (contract vs index) sub-pane
       klinecharts.registerIndicator({
         name: 'PREMIUM',
         shortName: 'Premium%',
@@ -91,7 +102,6 @@
         calc: (dataList) => dataList.map(d => ({ premium: d.premium ?? null })),
       });
 
-      // Funding Rate % sub-pane
       klinecharts.registerIndicator({
         name: 'FUNDING',
         shortName: 'FundingRate%',
@@ -103,10 +113,18 @@
       });
     }
 
-    function initChart() {
-      chart = klinecharts.init('chart', {
+    const darkStyles = {
+      grid: { show: true, horizontal: { color: '#222' }, vertical: { color: '#222' } },
+      indicator: { ohlc: { show: false } },
+      xAxis: { tickText: { color: '#666' } },
+      yAxis: { tickText: { color: '#666' } },
+    };
+
+    function initCharts() {
+      // --- Price chart (line + index overlay + premium + funding sub-panes) ---
+      priceChart = klinecharts.init('price-chart', {
         styles: {
-          grid: { show: true, horizontal: { color: '#222' }, vertical: { color: '#222' } },
+          ...darkStyles,
           candle: {
             type: 'area',
             area: {
@@ -124,39 +142,80 @@
               ],
             },
           },
-          indicator: { ohlc: { show: false } },
-          xAxis: { tickText: { color: '#666' } },
-          yAxis: { tickText: { color: '#666' } },
         },
       });
 
-      // Main pane: index price overlay (contract price is drawn by candle area)
-      chart.createIndicator('IDX_PRICE', false, { id: 'candle_pane' });
+      priceChart.createIndicator('IDX_PRICE', false, { id: 'candle_pane' });
+      priceChart.createIndicator('PREMIUM', false, { id: 'premium_pane', height: 80 });
+      priceChart.createIndicator('FUNDING', false, { id: 'funding_pane', height: 60 });
 
-      // Sub-pane: premium %
-      chart.createIndicator('PREMIUM', false, { id: 'premium_pane', height: 120 });
+      // --- Spread chart (K-line) ---
+      spreadChart = klinecharts.init('spread-chart', {
+        styles: {
+          ...darkStyles,
+          candle: {
+            priceMark: { last: { show: true } },
+            bar: { upColor: '#4ec9b0', downColor: '#f44747', upBorderColor: '#4ec9b0', downBorderColor: '#f44747' },
+            tooltip: {
+              custom: [
+                { title: 'open', value: '{open}%' },
+                { title: 'high', value: '{high}%' },
+                { title: 'low', value: '{low}%' },
+                { title: 'close', value: '{close}%' },
+              ],
+            },
+          },
+        },
+        customApi: {
+          formatPrice: (price) => price.toFixed(2) + '%',
+        },
+      });
 
-      // Sub-pane: funding rate %
-      chart.createIndicator('FUNDING', false, { id: 'funding_pane', height: 100 });
+      spreadChart.createIndicator('MA', false, { id: 'candle_pane' });
     }
 
-    async function loadData() {
+    // --- Data loading ---
+    async function loadPriceData() {
+      document.getElementById('price-title').textContent =
+        `Price: RAVEUSDT @ ${currentExchange} [${currentPeriod}]`;
       try {
         const resp = await fetch(`/api/kline?exchange=${currentExchange}&symbol=RAVEUSDT&period=${currentPeriod}`);
         const json = await resp.json();
-        chart.applyNewData(json.data);
+        priceChart.applyNewData(json.data);
       } catch (e) {
-        console.error('Failed to load data:', e);
+        console.error('Failed to load price data:', e);
       }
     }
 
+    async function loadSpreadData() {
+      document.getElementById('spread-title').textContent =
+        `Spread: ${currentSpreadTarget} - aster [${currentPeriod}]`;
+      try {
+        const resp = await fetch(`/api/spread?base=aster&target=${currentSpreadTarget}&symbol=RAVEUSDT&period=${currentPeriod}`);
+        const json = await resp.json();
+        spreadChart.applyNewData(json.data);
+      } catch (e) {
+        console.error('Failed to load spread data:', e);
+      }
+    }
+
+    function loadAllData() {
+      loadPriceData();
+      loadSpreadData();
+    }
+
     // Auto-refresh every 5s
-    setInterval(loadData, 5000);
+    setInterval(loadAllData, 5000);
 
     // Event handlers
     document.getElementById('exchange').addEventListener('change', (e) => {
       currentExchange = e.target.value;
-      loadData();
+      loadPriceData();
+    });
+
+    document.getElementById('spread-target').addEventListener('change', (e) => {
+      currentSpreadTarget = e.target.value;
+      loadSpreadData();
     });
 
     document.getElementById('period-group').addEventListener('click', (e) => {
@@ -164,13 +223,13 @@
       document.querySelectorAll('#period-group button').forEach(b => b.classList.remove('active'));
       e.target.classList.add('active');
       currentPeriod = e.target.dataset.period;
-      loadData();
+      loadAllData();
     });
 
     // Init
     registerIndicators();
-    initChart();
-    loadData();
+    initCharts();
+    loadAllData();
   </script>
 </body>
 </html>
