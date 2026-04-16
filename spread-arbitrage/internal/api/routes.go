@@ -10,6 +10,7 @@ import (
 	"spread-arbitrage/internal/engine"
 	"spread-arbitrage/internal/exchange"
 	"spread-arbitrage/internal/model"
+	"spread-arbitrage/internal/wsmanager"
 )
 
 var wsUpgrader = websocket.Upgrader{
@@ -21,10 +22,11 @@ type Handler struct {
 	taskMgr *engine.TaskManager
 	clients map[string]exchange.Client
 	hub     *Hub
+	wsMgr   *wsmanager.Manager
 }
 
-func NewHandler(eng *engine.Engine, tm *engine.TaskManager, clients map[string]exchange.Client, hub *Hub) *Handler {
-	return &Handler{engine: eng, taskMgr: tm, clients: clients, hub: hub}
+func NewHandler(eng *engine.Engine, tm *engine.TaskManager, clients map[string]exchange.Client, hub *Hub, wsMgr *wsmanager.Manager) *Handler {
+	return &Handler{engine: eng, taskMgr: tm, clients: clients, hub: hub, wsMgr: wsMgr}
 }
 
 func (h *Handler) RegisterRoutes(r *gin.Engine) {
@@ -39,6 +41,15 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.POST("/tasks/:id/close", h.ManualClose)
 	api.GET("/tasks/:id/positions", h.GetPositions)
 	api.GET("/tasks/:id/trades", h.GetTrades)
+
+	// Market data subscription (independent of tasks)
+	api.POST("/subscribe", h.Subscribe)
+	api.POST("/unsubscribe", h.Unsubscribe)
+
+	// Query positions/trades by exchange+symbol directly (no task required)
+	api.GET("/positions/:exchange/:symbol", h.GetPositionsByExchange)
+	api.GET("/trades/:exchange/:symbol", h.GetTradesByExchange)
+
 	r.GET("/ws", h.HandleWebSocket)
 }
 
@@ -241,6 +252,95 @@ func (h *Handler) GetTrades(c *gin.Context) {
 	c.JSON(http.StatusOK, allTrades)
 }
 
+// Subscribe subscribes to market data for an exchange+symbol pair
+func (h *Handler) Subscribe(c *gin.Context) {
+	var req struct {
+		Exchange string `json:"exchange" binding:"required"`
+		Symbol   string `json:"symbol" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if _, ok := h.clients[req.Exchange]; !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "unknown exchange: " + req.Exchange})
+		return
+	}
+	ctx := context.Background()
+	if err := h.wsMgr.Subscribe(ctx, req.Exchange, req.Symbol); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	// Also subscribe to depth
+	if err := h.wsMgr.SubscribeDepth(ctx, req.Exchange, req.Symbol); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "subscribed", "exchange": req.Exchange, "symbol": req.Symbol})
+}
+
+// Unsubscribe unsubscribes from market data
+func (h *Handler) Unsubscribe(c *gin.Context) {
+	var req struct {
+		Exchange string `json:"exchange" binding:"required"`
+		Symbol   string `json:"symbol" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	h.wsMgr.Unsubscribe(req.Exchange, req.Symbol)
+	h.wsMgr.UnsubscribeDepth(req.Exchange, req.Symbol)
+	c.JSON(http.StatusOK, gin.H{"message": "unsubscribed"})
+}
+
+// GetPositionsByExchange returns position for a specific exchange+symbol
+func (h *Handler) GetPositionsByExchange(c *gin.Context) {
+	exchangeName := c.Param("exchange")
+	symbol := c.Param("symbol")
+	ctx := context.Background()
+
+	client, ok := h.clients[exchangeName]
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "unknown exchange: " + exchangeName})
+		return
+	}
+
+	pos, err := client.GetPosition(ctx, symbol)
+	if err != nil {
+		// Return empty position instead of 500 (API key may not be configured)
+		c.JSON(http.StatusOK, &model.Position{
+			Exchange: exchangeName,
+			Symbol:   symbol,
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, pos)
+}
+
+// GetTradesByExchange returns trades for a specific exchange+symbol
+func (h *Handler) GetTradesByExchange(c *gin.Context) {
+	exchangeName := c.Param("exchange")
+	symbol := c.Param("symbol")
+	ctx := context.Background()
+
+	client, ok := h.clients[exchangeName]
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "unknown exchange: " + exchangeName})
+		return
+	}
+
+	trades, err := client.GetTrades(ctx, symbol)
+	if err != nil {
+		// Return empty array instead of 500 (API key may not be configured)
+		c.JSON(http.StatusOK, []model.Trade{})
+		return
+	}
+
+	c.JSON(http.StatusOK, trades)
+}
+
 // HandleWebSocket upgrades connection and registers with hub
 func (h *Handler) HandleWebSocket(c *gin.Context) {
 	conn, err := wsUpgrader.Upgrade(c.Writer, c.Request, nil)
@@ -249,12 +349,12 @@ func (h *Handler) HandleWebSocket(c *gin.Context) {
 		return
 	}
 
-	// Register connection with hub
-	h.hub.Register(conn)
+	// Register connection with hub (returns a write-safe wrapper)
+	wc := h.hub.Register(conn)
 
 	// Read loop to detect client disconnect
 	go func() {
-		defer h.hub.Unregister(conn)
+		defer h.hub.Unregister(wc)
 		for {
 			if _, _, err := conn.ReadMessage(); err != nil {
 				break

@@ -12,6 +12,20 @@ type BookTicker struct {
 	ReceivedAt time.Time // local receive time
 }
 
+// OrderBookLevel represents one price level in the order book
+type OrderBookLevel struct {
+	Price    float64 `json:"price"`
+	Quantity float64 `json:"quantity"`
+}
+
+// OrderBook represents a snapshot of the order book
+type OrderBook struct {
+	Exchange string           `json:"exchange"`
+	Symbol   string           `json:"symbol"`
+	Bids     []OrderBookLevel `json:"bids"` // sorted high to low
+	Asks     []OrderBookLevel `json:"asks"` // sorted low to high
+}
+
 // Direction of the spread trade
 type Direction string
 

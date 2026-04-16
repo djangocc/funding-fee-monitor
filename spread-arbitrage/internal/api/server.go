@@ -5,19 +5,20 @@ import (
 	"github.com/gin-gonic/gin"
 	"spread-arbitrage/internal/engine"
 	"spread-arbitrage/internal/exchange"
+	"spread-arbitrage/internal/wsmanager"
 )
 
-func NewServer(eng *engine.Engine, tm *engine.TaskManager, clients map[string]exchange.Client, hub *Hub) *gin.Engine {
+func NewServer(eng *engine.Engine, tm *engine.TaskManager, clients map[string]exchange.Client, hub *Hub, wsMgr *wsmanager.Manager) *gin.Engine {
 	r := gin.Default()
 
 	r.Use(cors.New(cors.Config{
-		AllowOrigins:     []string{"http://localhost:5173"},
+		AllowOrigins:     []string{"http://localhost:18528"},
 		AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
 		AllowHeaders:     []string{"Origin", "Content-Type"},
 		AllowWebSockets:  true,
 	}))
 
-	handler := NewHandler(eng, tm, clients, hub)
+	handler := NewHandler(eng, tm, clients, hub, wsMgr)
 	handler.RegisterRoutes(r)
 
 	r.Static("/assets", "./web/dist/assets")

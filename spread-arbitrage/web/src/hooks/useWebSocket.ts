@@ -1,7 +1,7 @@
 import { useEffect, useRef, useCallback, useState } from 'react'
 
 export interface WSEvent {
-  type: 'spread_update' | 'task_status' | 'trade_executed' | 'error'
+  type: 'spread_update' | 'task_status' | 'trade_executed' | 'error' | 'quote'
   task_id: string
   data: any
 }
@@ -27,7 +27,7 @@ export function useWebSocket(onMessage: (event: WSEvent) => void) {
       try {
         const event: WSEvent = JSON.parse(e.data)
         onMessageRef.current(event)
-      } catch {}
+      } catch { /* ignore malformed */ }
     }
   }, [])
 

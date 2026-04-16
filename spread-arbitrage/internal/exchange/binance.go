@@ -9,10 +9,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"sort"
 	"spread-arbitrage/internal/model"
+	"strconv"
 	"strings"
 	"time"
 
@@ -21,13 +23,14 @@ import (
 
 // BinanceClient implements the Client interface for Binance Futures and Binance-like exchanges
 type BinanceClient struct {
-	name        string
-	apiKey      string
-	apiSecret   string
-	baseURL     string
-	wsURLTmpl   string
-	httpClient  *http.Client
-	wsDialer    *websocket.Dialer
+	name         string
+	apiKey       string
+	apiSecret    string
+	baseURL      string
+	wsURLTmpl    string
+	depthURLTmpl string
+	httpClient   *http.Client
+	wsDialer     *websocket.Dialer
 }
 
 // NewBinanceClient creates a client for Binance Futures
@@ -38,13 +41,14 @@ func NewBinanceClient(apiKey, apiSecret string) *BinanceClient {
 		apiSecret,
 		"https://fapi.binance.com",
 		"wss://fstream.binance.com/ws/%s@bookTicker",
+		"wss://fstream.binance.com/ws/%s@depth5@100ms",
 		false,
 	)
 }
 
 // newBinanceLikeClient creates a generic Binance-compatible client
 // Allows custom URLs and TLS config for Aster or other exchanges
-func newBinanceLikeClient(name, apiKey, apiSecret, baseURL, wsURLTemplate string, tlsSkipVerify bool) *BinanceClient {
+func newBinanceLikeClient(name, apiKey, apiSecret, baseURL, wsURLTemplate, depthURLTemplate string, tlsSkipVerify bool) *BinanceClient {
 	httpClient := &http.Client{
 		Timeout: 10 * time.Second,
 	}
@@ -61,13 +65,14 @@ func newBinanceLikeClient(name, apiKey, apiSecret, baseURL, wsURLTemplate string
 	}
 
 	return &BinanceClient{
-		name:       name,
-		apiKey:     apiKey,
-		apiSecret:  apiSecret,
-		baseURL:    baseURL,
-		wsURLTmpl:  wsURLTemplate,
-		httpClient: httpClient,
-		wsDialer:   wsDialer,
+		name:         name,
+		apiKey:       apiKey,
+		apiSecret:    apiSecret,
+		baseURL:      baseURL,
+		wsURLTmpl:    wsURLTemplate,
+		depthURLTmpl: depthURLTemplate,
+		httpClient:   httpClient,
+		wsDialer:     wsDialer,
 	}
 }
 
@@ -140,6 +145,14 @@ type binanceBookTickerMsg struct {
 	Timestamp int64  `json:"T"`
 }
 
+// binanceDepthMsg is the WebSocket message format for depth updates
+type binanceDepthMsg struct {
+	Event  string     `json:"e"`
+	Symbol string     `json:"s"`
+	Bids   [][]string `json:"b"` // [[price, quantity], ...]
+	Asks   [][]string `json:"a"` // [[price, quantity], ...]
+}
+
 // SubscribeBookTicker connects to WebSocket and streams book ticker updates
 func (c *BinanceClient) SubscribeBookTicker(ctx context.Context, symbol string) (<-chan model.BookTicker, error) {
 	wsURL := fmt.Sprintf(c.wsURLTmpl, strings.ToLower(symbol))
@@ -208,9 +221,15 @@ func (c *BinanceClient) readBookTickerMessages(ctx context.Context, conn *websoc
 			continue // skip malformed messages
 		}
 
-		var bid, ask float64
-		fmt.Sscanf(msg.BidPrice, "%f", &bid)
-		fmt.Sscanf(msg.AskPrice, "%f", &ask)
+		bid, err1 := strconv.ParseFloat(msg.BidPrice, 64)
+		ask, err2 := strconv.ParseFloat(msg.AskPrice, 64)
+		if err1 != nil || err2 != nil {
+			log.Printf("[%s] invalid price data: bid=%q ask=%q", c.name, msg.BidPrice, msg.AskPrice)
+			continue
+		}
+		if bid <= 0 || ask <= 0 || ask < bid*0.5 {
+			log.Printf("[%s] suspicious price: bid=%f ask=%f raw_bid=%q raw_ask=%q", c.name, bid, ask, msg.BidPrice, msg.AskPrice)
+		}
 
 		ticker := model.BookTicker{
 			Exchange:   c.name,
@@ -223,6 +242,125 @@ func (c *BinanceClient) readBookTickerMessages(ctx context.Context, conn *websoc
 
 		select {
 		case ch <- ticker:
+		case <-ctx.Done():
+			return false
+		default:
+			// Channel full, skip
+		}
+	}
+}
+
+// SubscribeDepth connects to WebSocket and streams order book depth updates
+func (c *BinanceClient) SubscribeDepth(ctx context.Context, symbol string) (<-chan model.OrderBook, error) {
+	wsURL := fmt.Sprintf(c.depthURLTmpl, strings.ToLower(symbol))
+	ch := make(chan model.OrderBook, 100)
+
+	go c.handleDepthWS(ctx, wsURL, symbol, ch)
+
+	return ch, nil
+}
+
+// handleDepthWS manages WebSocket connection with reconnection logic
+func (c *BinanceClient) handleDepthWS(ctx context.Context, wsURL, symbol string, ch chan model.OrderBook) {
+	defer close(ch)
+
+	maxRetries := 10
+	retryDelay := 3 * time.Second
+
+	for retry := 0; retry < maxRetries; retry++ {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		conn, _, err := c.wsDialer.Dial(wsURL, nil)
+		if err != nil {
+			if retry < maxRetries-1 {
+				time.Sleep(retryDelay)
+				continue
+			}
+			return
+		}
+
+		// Read messages until error or context cancellation
+		disconnected := c.readDepthMessages(ctx, conn, symbol, ch)
+		conn.Close()
+
+		if !disconnected {
+			// Context cancelled, exit gracefully
+			return
+		}
+
+		// Connection lost, retry
+		if retry < maxRetries-1 {
+			time.Sleep(retryDelay)
+		}
+	}
+}
+
+// readDepthMessages reads and parses WebSocket depth messages
+func (c *BinanceClient) readDepthMessages(ctx context.Context, conn *websocket.Conn, symbol string, ch chan model.OrderBook) bool {
+	for {
+		select {
+		case <-ctx.Done():
+			return false
+		default:
+		}
+
+		_, message, err := conn.ReadMessage()
+		if err != nil {
+			return true // disconnected
+		}
+
+		var msg binanceDepthMsg
+		if err := json.Unmarshal(message, &msg); err != nil {
+			continue // skip malformed messages
+		}
+
+		// Parse bids
+		bids := make([]model.OrderBookLevel, 0, len(msg.Bids))
+		for _, b := range msg.Bids {
+			if len(b) < 2 {
+				continue
+			}
+			price, err1 := strconv.ParseFloat(b[0], 64)
+			qty, err2 := strconv.ParseFloat(b[1], 64)
+			if err1 != nil || err2 != nil {
+				continue
+			}
+			bids = append(bids, model.OrderBookLevel{
+				Price:    price,
+				Quantity: qty,
+			})
+		}
+
+		// Parse asks
+		asks := make([]model.OrderBookLevel, 0, len(msg.Asks))
+		for _, a := range msg.Asks {
+			if len(a) < 2 {
+				continue
+			}
+			price, err1 := strconv.ParseFloat(a[0], 64)
+			qty, err2 := strconv.ParseFloat(a[1], 64)
+			if err1 != nil || err2 != nil {
+				continue
+			}
+			asks = append(asks, model.OrderBookLevel{
+				Price:    price,
+				Quantity: qty,
+			})
+		}
+
+		orderBook := model.OrderBook{
+			Exchange: c.name,
+			Symbol:   symbol,
+			Bids:     bids,
+			Asks:     asks,
+		}
+
+		select {
+		case ch <- orderBook:
 		case <-ctx.Done():
 			return false
 		default:
@@ -261,9 +399,8 @@ func (c *BinanceClient) PlaceMarketOrder(ctx context.Context, symbol string, sid
 		return nil, fmt.Errorf("parse order response: %w", err)
 	}
 
-	var avgPrice, executedQty float64
-	fmt.Sscanf(resp.AvgPrice, "%f", &avgPrice)
-	fmt.Sscanf(resp.ExecutedQty, "%f", &executedQty)
+	avgPrice, _ := strconv.ParseFloat(resp.AvgPrice, 64)
+	executedQty, _ := strconv.ParseFloat(resp.ExecutedQty, 64)
 
 	order := &model.Order{
 		Exchange:  c.name,
@@ -304,10 +441,9 @@ func (c *BinanceClient) GetPosition(ctx context.Context, symbol string) (*model.
 	// Find the position for this symbol
 	for _, p := range positions {
 		if p.Symbol == symbol {
-			var posAmt, entryPrice, unrealizedPnL float64
-			fmt.Sscanf(p.PositionAmt, "%f", &posAmt)
-			fmt.Sscanf(p.EntryPrice, "%f", &entryPrice)
-			fmt.Sscanf(p.UnRealizedProfit, "%f", &unrealizedPnL)
+			posAmt, _ := strconv.ParseFloat(p.PositionAmt, 64)
+			entryPrice, _ := strconv.ParseFloat(p.EntryPrice, 64)
+			unrealizedPnL, _ := strconv.ParseFloat(p.UnRealizedProfit, 64)
 
 			side := ""
 			size := posAmt
@@ -369,10 +505,9 @@ func (c *BinanceClient) GetTrades(ctx context.Context, symbol string) ([]model.T
 
 	trades := make([]model.Trade, 0, len(binanceTrades))
 	for _, bt := range binanceTrades {
-		var price, qty, commission float64
-		fmt.Sscanf(bt.Price, "%f", &price)
-		fmt.Sscanf(bt.Qty, "%f", &qty)
-		fmt.Sscanf(bt.Commission, "%f", &commission)
+		price, _ := strconv.ParseFloat(bt.Price, 64)
+		qty, _ := strconv.ParseFloat(bt.Qty, 64)
+		commission, _ := strconv.ParseFloat(bt.Commission, 64)
 
 		trades = append(trades, model.Trade{
 			Exchange:  c.name,

@@ -9,26 +9,44 @@ import (
 	"spread-arbitrage/internal/model"
 )
 
+// wsConn wraps a websocket.Conn with a write mutex
+type wsConn struct {
+	conn *websocket.Conn
+	mu   sync.Mutex
+}
+
+func (wc *wsConn) WriteMessage(messageType int, data []byte) error {
+	wc.mu.Lock()
+	defer wc.mu.Unlock()
+	return wc.conn.WriteMessage(messageType, data)
+}
+
+func (wc *wsConn) Close() error {
+	return wc.conn.Close()
+}
+
 type Hub struct {
 	mu      sync.RWMutex
-	clients map[*websocket.Conn]bool
+	clients map[*wsConn]bool
 }
 
 func NewHub() *Hub {
-	return &Hub{clients: make(map[*websocket.Conn]bool)}
+	return &Hub{clients: make(map[*wsConn]bool)}
 }
 
-func (h *Hub) Register(conn *websocket.Conn) {
+func (h *Hub) Register(conn *websocket.Conn) *wsConn {
+	wc := &wsConn{conn: conn}
 	h.mu.Lock()
-	h.clients[conn] = true
+	h.clients[wc] = true
 	h.mu.Unlock()
+	return wc
 }
 
-func (h *Hub) Unregister(conn *websocket.Conn) {
+func (h *Hub) Unregister(wc *wsConn) {
 	h.mu.Lock()
-	delete(h.clients, conn)
+	delete(h.clients, wc)
 	h.mu.Unlock()
-	conn.Close()
+	wc.Close()
 }
 
 func (h *Hub) Broadcast(event model.WSEvent) {
@@ -38,11 +56,16 @@ func (h *Hub) Broadcast(event model.WSEvent) {
 		return
 	}
 	h.mu.RLock()
-	defer h.mu.RUnlock()
-	for conn := range h.clients {
-		if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
+	clients := make([]*wsConn, 0, len(h.clients))
+	for wc := range h.clients {
+		clients = append(clients, wc)
+	}
+	h.mu.RUnlock()
+
+	for _, wc := range clients {
+		if err := wc.WriteMessage(websocket.TextMessage, data); err != nil {
 			log.Printf("[ws] write error: %v", err)
-			go h.Unregister(conn)
+			go h.Unregister(wc)
 		}
 	}
 }

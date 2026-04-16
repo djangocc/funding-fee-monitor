@@ -125,6 +125,20 @@ type okxTickerMsg struct {
 	Data []okxTickerData `json:"data"`
 }
 
+// okxDepthData is the WebSocket message format for depth
+type okxDepthData struct {
+	Asks [][]string `json:"asks"` // [[price, quantity, deprecated, orderCount], ...]
+	Bids [][]string `json:"bids"` // [[price, quantity, deprecated, orderCount], ...]
+}
+
+type okxDepthMsg struct {
+	Arg struct {
+		Channel string `json:"channel"`
+		InstID  string `json:"instId"`
+	} `json:"arg"`
+	Data []okxDepthData `json:"data"`
+}
+
 // SubscribeBookTicker connects to OKX WebSocket and streams book ticker updates
 func (c *OKXClient) SubscribeBookTicker(ctx context.Context, symbol string) (<-chan model.BookTicker, error) {
 	wsURL := "wss://ws.okx.com:8443/ws/v5/public"
@@ -240,6 +254,158 @@ func (c *OKXClient) readBookTickerMessages(ctx context.Context, conn *websocket.
 
 			select {
 			case ch <- ticker:
+			case <-ctx.Done():
+				return false
+			default:
+				// Channel full, skip
+			}
+		}
+	}
+}
+
+// SubscribeDepth connects to OKX WebSocket and streams order book depth updates
+func (c *OKXClient) SubscribeDepth(ctx context.Context, symbol string) (<-chan model.OrderBook, error) {
+	wsURL := "wss://ws.okx.com:8443/ws/v5/public"
+	instID := symbolToInstID(symbol)
+	ch := make(chan model.OrderBook, 100)
+
+	go c.handleDepthWS(ctx, wsURL, symbol, instID, ch)
+
+	return ch, nil
+}
+
+// handleDepthWS manages WebSocket connection with reconnection logic
+func (c *OKXClient) handleDepthWS(ctx context.Context, wsURL, symbol, instID string, ch chan model.OrderBook) {
+	defer close(ch)
+
+	maxRetries := 10
+	retryDelay := 3 * time.Second
+
+	for retry := 0; retry < maxRetries; retry++ {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		conn, _, err := c.wsDialer.Dial(wsURL, nil)
+		if err != nil {
+			if retry < maxRetries-1 {
+				time.Sleep(retryDelay)
+				continue
+			}
+			return
+		}
+
+		// Subscribe to books5 channel
+		subMsg := map[string]interface{}{
+			"op": "subscribe",
+			"args": []map[string]string{
+				{
+					"channel": "books5",
+					"instId":  instID,
+				},
+			},
+		}
+
+		if err := conn.WriteJSON(subMsg); err != nil {
+			conn.Close()
+			if retry < maxRetries-1 {
+				time.Sleep(retryDelay)
+				continue
+			}
+			return
+		}
+
+		// Read messages until error or context cancellation
+		disconnected := c.readDepthMessages(ctx, conn, symbol, ch)
+		conn.Close()
+
+		if !disconnected {
+			// Context cancelled, exit gracefully
+			return
+		}
+
+		// Connection lost, retry
+		if retry < maxRetries-1 {
+			time.Sleep(retryDelay)
+		}
+	}
+}
+
+// readDepthMessages reads and parses OKX WebSocket depth messages
+func (c *OKXClient) readDepthMessages(ctx context.Context, conn *websocket.Conn, symbol string, ch chan model.OrderBook) bool {
+	for {
+		select {
+		case <-ctx.Done():
+			return false
+		default:
+		}
+
+		_, message, err := conn.ReadMessage()
+		if err != nil {
+			return true // disconnected
+		}
+
+		// Check for ping message
+		messageStr := string(message)
+		if messageStr == "ping" {
+			if err := conn.WriteMessage(websocket.TextMessage, []byte("pong")); err != nil {
+				return true // disconnected
+			}
+			continue
+		}
+
+		var msg okxDepthMsg
+		if err := json.Unmarshal(message, &msg); err != nil {
+			continue // skip malformed messages
+		}
+
+		// Process depth data
+		for _, data := range msg.Data {
+			// Parse bids
+			bids := make([]model.OrderBookLevel, 0, len(data.Bids))
+			for _, b := range data.Bids {
+				if len(b) < 2 {
+					continue
+				}
+				price, err1 := strconv.ParseFloat(b[0], 64)
+				qty, err2 := strconv.ParseFloat(b[1], 64)
+				if err1 != nil || err2 != nil {
+					continue
+				}
+				bids = append(bids, model.OrderBookLevel{
+					Price:    price,
+					Quantity: qty,
+				})
+			}
+
+			// Parse asks
+			asks := make([]model.OrderBookLevel, 0, len(data.Asks))
+			for _, a := range data.Asks {
+				if len(a) < 2 {
+					continue
+				}
+				price, err1 := strconv.ParseFloat(a[0], 64)
+				qty, err2 := strconv.ParseFloat(a[1], 64)
+				if err1 != nil || err2 != nil {
+					continue
+				}
+				asks = append(asks, model.OrderBookLevel{
+					Price:    price,
+					Quantity: qty,
+				})
+			}
+
+			orderBook := model.OrderBook{
+				Exchange: c.name,
+				Symbol:   symbol,
+				Bids:     bids,
+				Asks:     asks,
+			}
+
+			select {
+			case ch <- orderBook:
 			case <-ctx.Done():
 				return false
 			default:

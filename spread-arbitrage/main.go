@@ -29,11 +29,34 @@ func main() {
 
 	// Break circular dependency: WS Manager calls Engine.OnTick, Engine needs WS Manager
 	var eng *engine.Engine
-	wsMgr := wsmanager.New(clients, func(exchangeName, symbol string, tick model.BookTicker) {
-		if eng != nil {
-			eng.OnTick(exchangeName, symbol, tick)
-		}
-	})
+	wsMgr := wsmanager.New(clients,
+		func(exchangeName, symbol string, tick model.BookTicker) {
+			// Broadcast raw quote to frontend (for live price display independent of tasks)
+			hub.Broadcast(model.WSEvent{
+				Type:   "quote",
+				TaskID: "",
+				Data: map[string]interface{}{
+					"exchange":    exchangeName,
+					"symbol":      tick.Symbol,
+					"bid":         tick.Bid,
+					"ask":         tick.Ask,
+					"timestamp":   tick.Timestamp,
+					"received_at": tick.ReceivedAt,
+				},
+			})
+			if eng != nil {
+				eng.OnTick(exchangeName, symbol, tick)
+			}
+		},
+		func(exchangeName, symbol string, book model.OrderBook) {
+			// Broadcast order book to frontend
+			hub.Broadcast(model.WSEvent{
+				Type:   "orderbook",
+				TaskID: "",
+				Data:   book,
+			})
+		},
+	)
 	// Convert clients map to map[string]interface{} for engine
 	clientsInterface := make(map[string]interface{})
 	for k, v := range clients {
@@ -44,7 +67,7 @@ func main() {
 	})
 
 	// Start HTTP server
-	server := api.NewServer(eng, taskMgr, clients, hub)
+	server := api.NewServer(eng, taskMgr, clients, hub, wsMgr)
 	go func() {
 		log.Printf("Server listening on :%s", cfg.Port)
 		if err := server.Run(":" + cfg.Port); err != nil {

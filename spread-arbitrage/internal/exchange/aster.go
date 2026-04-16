@@ -7,6 +7,7 @@ func NewAsterClient(apiKey, apiSecret string) *BinanceClient {
 	return newBinanceLikeClient("aster", apiKey, apiSecret,
 		"https://fapi.asterdex.com",
 		"wss://fstream.asterdex.com/ws/%s@bookTicker",
+		"wss://fstream.asterdex.com/ws/%s@depth5@100ms",
 		true, // skip TLS verify
 	)
 }

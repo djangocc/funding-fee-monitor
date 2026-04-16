@@ -111,3 +111,33 @@ export async function getTrades(id: string): Promise<Trade[]> {
   if (!res.ok) throw new Error(await res.text())
   return res.json()
 }
+
+export async function subscribe(exchange: string, symbol: string): Promise<void> {
+  const res = await fetch(`${BASE}/subscribe`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ exchange, symbol }),
+  })
+  if (!res.ok) throw new Error(await res.text())
+}
+
+export async function unsubscribe(exchange: string, symbol: string): Promise<void> {
+  const res = await fetch(`${BASE}/unsubscribe`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ exchange, symbol }),
+  })
+  if (!res.ok) throw new Error(await res.text())
+}
+
+export async function getPositionByExchange(exchange: string, symbol: string): Promise<Position> {
+  const res = await fetch(`${BASE}/positions/${exchange}/${symbol}`)
+  if (!res.ok) throw new Error(await res.text())
+  return res.json()
+}
+
+export async function getTradesByExchange(exchange: string, symbol: string): Promise<Trade[]> {
+  const res = await fetch(`${BASE}/trades/${exchange}/${symbol}`)
+  if (!res.ok) throw new Error(await res.text())
+  return res.json()
+}
