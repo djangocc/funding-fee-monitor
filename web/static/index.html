@@ -110,15 +110,19 @@
           candle: {
             type: 'area',
             area: {
-              lineSize: 0,
-              lineColor: 'transparent',
+              lineSize: 2,
+              lineColor: '#4ec9b0',
               value: 'close',
               smooth: false,
-              backgroundColor: ['transparent', 'transparent'],
+              backgroundColor: ['rgba(78,201,176,0.1)', 'transparent'],
               point: { show: false },
             },
             priceMark: { last: { show: true } },
-            tooltip: { showRule: 'none' },
+            tooltip: {
+              custom: [
+                { title: 'Contract', value: '{close}' },
+              ],
+            },
           },
           indicator: { ohlc: { show: false } },
           xAxis: { tickText: { color: '#666' } },
@@ -126,8 +130,7 @@
         },
       });
 
-      // Main pane: contract price line + index price line
-      chart.createIndicator('CONTRACT_PRICE', false, { id: 'candle_pane' });
+      // Main pane: index price overlay (contract price is drawn by candle area)
       chart.createIndicator('IDX_PRICE', false, { id: 'candle_pane' });
 
       // Sub-pane: premium %
