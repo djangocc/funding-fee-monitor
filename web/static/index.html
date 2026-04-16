@@ -11,6 +11,7 @@
     .toolbar {
       display: flex; align-items: center; gap: 12px;
       padding: 8px 16px; background: #16213e; border-bottom: 1px solid #333;
+      flex-wrap: wrap;
     }
     .toolbar select, .toolbar button {
       background: #0f3460; color: #e0e0e0; border: 1px solid #444;
@@ -23,18 +24,7 @@
     .toolbar .period-group button { min-width: 32px; }
     .toolbar label { font-size: 12px; color: #888; }
 
-    .charts-container {
-      display: flex; flex-direction: column; height: calc(100vh - 40px);
-    }
-    .chart-section {
-      display: flex; flex-direction: column; border-bottom: 1px solid #333;
-    }
-    .chart-section.price { flex: 3; }
-    .chart-section.spread { flex: 1; }
-    .chart-title {
-      font-size: 11px; padding: 4px 12px; background: #16213e; color: #888;
-    }
-    .chart-wrapper { flex: 1; }
+    #chart { width: 100%; height: calc(100vh - 44px); }
   </style>
 </head>
 <body>
@@ -44,12 +34,6 @@
       <option value="aster">Aster</option>
       <option value="binance">Binance</option>
       <option value="okx">OKX</option>
-    </select>
-
-    <label>Spread:</label>
-    <select id="spread-target">
-      <option value="binance">BN - Aster</option>
-      <option value="okx">OKX - Aster</option>
     </select>
 
     <label>Period:</label>
@@ -64,51 +48,44 @@
     </div>
   </div>
 
-  <div class="charts-container">
-    <div class="chart-section price">
-      <div class="chart-title" id="price-title">Price: RAVEUSDT @ aster</div>
-      <div class="chart-wrapper" id="price-chart"></div>
-    </div>
-    <div class="chart-section spread">
-      <div class="chart-title" id="spread-title">Spread: binance - aster</div>
-      <div class="chart-wrapper" id="spread-chart"></div>
-    </div>
-  </div>
+  <div id="chart"></div>
 
   <script src="https://unpkg.com/klinecharts@9.8.12/dist/umd/klinecharts.min.js"></script>
   <script>
-    // State
     let currentExchange = 'aster';
-    let currentSpreadTarget = 'binance';
     let currentPeriod = '1m';
-    let priceChart = null;
-    let spreadChart = null;
-    let ws = null;
+    let chart = null;
 
     // --- Register custom indicators ---
     function registerIndicators() {
-      // Index Price overlay on candle pane
+      // Contract mid price line (main pane, replaces candle)
+      klinecharts.registerIndicator({
+        name: 'CONTRACT_PRICE',
+        shortName: 'Contract',
+        figures: [
+          { key: 'contract', title: 'Contract: ', type: 'line', styles: { color: '#4ec9b0' } },
+        ],
+        calc: (dataList) => dataList.map(d => ({ contract: d.close || null })),
+      });
+
+      // Index price line (main pane overlay)
       klinecharts.registerIndicator({
         name: 'IDX_PRICE',
         shortName: 'Index',
         figures: [
-          { key: 'index_price', title: 'Index: ', type: 'line' },
+          { key: 'index_price', title: 'Index: ', type: 'line', styles: { color: '#e6b422' } },
         ],
-        calc: (dataList) => {
-          return dataList.map(d => ({ index_price: d.index_price || null }));
-        },
+        calc: (dataList) => dataList.map(d => ({ index_price: d.index_price || null })),
       });
 
-      // Premium % sub-pane
+      // Premium % (contract vs index) sub-pane
       klinecharts.registerIndicator({
         name: 'PREMIUM',
         shortName: 'Premium%',
         figures: [
-          { key: 'premium', title: 'Premium: ', type: 'line' },
+          { key: 'premium', title: 'Premium: ', type: 'line', styles: { color: '#ff6b6b' } },
         ],
-        calc: (dataList) => {
-          return dataList.map(d => ({ premium: d.premium || null }));
-        },
+        calc: (dataList) => dataList.map(d => ({ premium: d.premium ?? null })),
       });
 
       // Funding Rate % sub-pane
@@ -116,130 +93,63 @@
         name: 'FUNDING',
         shortName: 'FundingRate%',
         figures: [
-          { key: 'funding_rate', title: 'Rate: ', type: 'line' },
+          { key: 'funding_rate', title: 'Rate: ', type: 'line', styles: { color: '#cc66ff' } },
         ],
-        calc: (dataList) => {
-          return dataList.map(d => ({ funding_rate: d.funding_rate || null }));
-        },
+        calc: (dataList) => dataList.map(d => ({ funding_rate: d.funding_rate ?? null })),
       });
     }
 
-    const chartStyles = {
-      grid: { show: true, horizontal: { color: '#222' }, vertical: { color: '#222' } },
-      candle: {
-        priceMark: { last: { show: true } },
-        bar: { upColor: '#4ec9b0', downColor: '#f44747', upBorderColor: '#4ec9b0', downBorderColor: '#f44747' },
-      },
-      indicator: { ohlc: { show: false } },
-      xAxis: { tickText: { color: '#666' } },
-      yAxis: { tickText: { color: '#666' } },
-    };
-
-    // Init charts
-    function initCharts() {
-      priceChart = klinecharts.init('price-chart', { styles: chartStyles });
-
-      spreadChart = klinecharts.init('spread-chart', {
+    function initChart() {
+      chart = klinecharts.init('chart', {
         styles: {
-          ...chartStyles,
+          grid: { show: true, horizontal: { color: '#222' }, vertical: { color: '#222' } },
           candle: {
-            ...chartStyles.candle,
-            tooltip: {
-              custom: [
-                { title: 'open', value: '{open}%' },
-                { title: 'high', value: '{high}%' },
-                { title: 'low', value: '{low}%' },
-                { title: 'close', value: '{close}%' },
-              ],
+            type: 'area',
+            area: {
+              lineSize: 0,
+              lineColor: 'transparent',
+              value: 'close',
+              smooth: false,
+              backgroundColor: ['transparent', 'transparent'],
+              point: { show: false },
             },
+            priceMark: { last: { show: true } },
+            tooltip: { showRule: 'none' },
           },
-        },
-        customApi: {
-          formatPrice: (price) => price.toFixed(2) + '%',
+          indicator: { ohlc: { show: false } },
+          xAxis: { tickText: { color: '#666' } },
+          yAxis: { tickText: { color: '#666' } },
         },
       });
 
-      // Price chart: MA on candle + index price overlay + premium pane + funding rate pane
-      priceChart.createIndicator('MA', false, { id: 'candle_pane' });
-      priceChart.createIndicator('IDX_PRICE', false, { id: 'candle_pane' });
-      priceChart.createIndicator('PREMIUM', false, { id: 'premium_pane', height: 80 });
-      priceChart.createIndicator('FUNDING', false, { id: 'funding_pane', height: 80 });
+      // Main pane: contract price line + index price line
+      chart.createIndicator('CONTRACT_PRICE', false, { id: 'candle_pane' });
+      chart.createIndicator('IDX_PRICE', false, { id: 'candle_pane' });
 
-      // Spread chart: MA + MACD
-      spreadChart.createIndicator('MA', false, { id: 'candle_pane' });
-      spreadChart.createIndicator('MACD');
+      // Sub-pane: premium %
+      chart.createIndicator('PREMIUM', false, { id: 'premium_pane', height: 120 });
+
+      // Sub-pane: funding rate %
+      chart.createIndicator('FUNDING', false, { id: 'funding_pane', height: 100 });
     }
 
-    // Fetch and load data
-    async function loadPriceData() {
-      const title = document.getElementById('price-title');
-      title.textContent = `Price: RAVEUSDT @ ${currentExchange} [${currentPeriod}]`;
-
+    async function loadData() {
       try {
         const resp = await fetch(`/api/kline?exchange=${currentExchange}&symbol=RAVEUSDT&period=${currentPeriod}`);
         const json = await resp.json();
-        priceChart.applyNewData(json.data);
+        chart.applyNewData(json.data);
       } catch (e) {
-        console.error('Failed to load price data:', e);
+        console.error('Failed to load data:', e);
       }
     }
 
-    async function loadSpreadData() {
-      const title = document.getElementById('spread-title');
-      title.textContent = `Spread: ${currentSpreadTarget} - aster [${currentPeriod}]`;
-
-      try {
-        const resp = await fetch(`/api/spread?base=aster&target=${currentSpreadTarget}&symbol=RAVEUSDT&period=${currentPeriod}`);
-        const json = await resp.json();
-        spreadChart.applyNewData(json.data);
-      } catch (e) {
-        console.error('Failed to load spread data:', e);
-      }
-    }
-
-    function loadAllData() {
-      loadPriceData();
-      loadSpreadData();
-    }
-
-    // --- WebSocket for real-time price updates ---
-    function connectPriceWS() {
-      if (ws) { ws.onclose = null; ws.close(); }
-      ws = new WebSocket(`ws://${location.host}/ws/kline`);
-      ws.onopen = () => {
-        ws.send(JSON.stringify({
-          exchange: currentExchange,
-          symbol: 'RAVEUSDT',
-          period: currentPeriod,
-        }));
-      };
-      ws.onmessage = (e) => {
-        const bar = JSON.parse(e.data);
-        priceChart.updateData(bar);
-      };
-      ws.onclose = (e) => {
-        if (e.code !== 1000) {
-          setTimeout(connectPriceWS, 3000);
-        }
-      };
-    }
-
-    // Spread + index data polling
-    setInterval(() => {
-      loadSpreadData();
-      loadPriceData();  // refresh to get latest index/premium/funding data
-    }, 5000);
+    // Auto-refresh every 5s
+    setInterval(loadData, 5000);
 
     // Event handlers
     document.getElementById('exchange').addEventListener('change', (e) => {
       currentExchange = e.target.value;
-      loadAllData();
-      connectPriceWS();
-    });
-
-    document.getElementById('spread-target').addEventListener('change', (e) => {
-      currentSpreadTarget = e.target.value;
-      loadSpreadData();
+      loadData();
     });
 
     document.getElementById('period-group').addEventListener('click', (e) => {
@@ -247,15 +157,13 @@
       document.querySelectorAll('#period-group button').forEach(b => b.classList.remove('active'));
       e.target.classList.add('active');
       currentPeriod = e.target.dataset.period;
-      loadAllData();
-      connectPriceWS();
+      loadData();
     });
 
     // Init
     registerIndicators();
-    initCharts();
-    loadAllData();
-    connectPriceWS();
+    initChart();
+    loadData();
   </script>
 </body>
 </html>
