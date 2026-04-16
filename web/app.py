@@ -182,6 +182,30 @@ async def index():
     return FileResponse("static/index.html")
 
 
+def query_index_series(exchange: str, symbol: str, period: str,
+                       start: Optional[str] = None, end: Optional[str] = None) -> dict:
+    """Query index_price measurement, return {timestamp: {field: value}}."""
+    window = PERIOD_MAP.get(period, "1m")
+    range_start = start or DEFAULT_RANGE.get(period, "-6h")
+    range_end = end or "now()"
+
+    flux = f'''
+from(bucket: "{INFLUX_BUCKET}")
+  |> range(start: {range_start}, stop: {range_end})
+  |> filter(fn: (r) => r._measurement == "index_price")
+  |> filter(fn: (r) => r.exchange == "{exchange}")
+  |> filter(fn: (r) => r.symbol == "{symbol}")
+  |> aggregateWindow(every: {window}, fn: last, createEmpty: false)
+'''
+    tables = query_api.query(flux)
+    by_ts = {}
+    for table in tables:
+        for record in table.records:
+            ts = int(record.get_time().timestamp() * 1000)
+            by_ts.setdefault(ts, {})[record.get_field()] = record.get_value()
+    return by_ts
+
+
 @app.get("/api/kline")
 async def get_kline(
     exchange: str = Query(default="aster"),
@@ -190,8 +214,26 @@ async def get_kline(
     start: Optional[str] = Query(default=None),
     end: Optional[str] = Query(default=None),
 ):
-    """Get OHLCV data for a single exchange."""
+    """Get OHLCV data with index_price, premium, funding_rate attached."""
     data = query_ohlcv(exchange, symbol, period, start, end)
+    index_data = query_index_series(exchange, symbol, period, start, end)
+
+    # Merge index data into each bar
+    for bar in data:
+        ts = bar["timestamp"]
+        # Find closest index timestamp (within window tolerance)
+        idx = index_data.get(ts, {})
+        mark = idx.get("mark_price")
+        index_px = idx.get("index_price")
+        funding = idx.get("funding_rate")
+        bar["index_price"] = index_px
+        bar["mark_price"] = mark
+        bar["funding_rate"] = round(funding * 100, 4) if funding is not None else None
+        if mark is not None and index_px is not None and index_px != 0:
+            bar["premium"] = round((mark - index_px) / index_px * 100, 4)
+        else:
+            bar["premium"] = None
+
     return {"data": data, "count": len(data)}
 
 
@@ -207,6 +249,59 @@ async def get_spread(
     """Get spread (target - base) as OHLCV data."""
     data = query_spread_ohlcv(base, target, symbol, period, start, end)
     return {"data": data, "count": len(data)}
+
+
+@app.get("/api/index")
+async def get_index(
+    exchange: str = Query(default="aster"),
+    symbol: str = Query(default="RAVEUSDT"),
+    period: str = Query(default="1m"),
+    start: Optional[str] = Query(default=None),
+    end: Optional[str] = Query(default=None),
+):
+    """Get index_price, mark_price, premium%, funding_rate time series."""
+    window = PERIOD_MAP.get(period, "1m")
+    range_start = start or DEFAULT_RANGE.get(period, "-6h")
+    range_end = end or "now()"
+
+    flux = f'''
+from(bucket: "{INFLUX_BUCKET}")
+  |> range(start: {range_start}, stop: {range_end})
+  |> filter(fn: (r) => r._measurement == "index_price")
+  |> filter(fn: (r) => r.exchange == "{exchange}")
+  |> filter(fn: (r) => r.symbol == "{symbol}")
+  |> aggregateWindow(every: {window}, fn: last, createEmpty: false)
+'''
+    tables = query_api.query(flux)
+
+    # {timestamp: {field: value}}
+    by_ts = {}
+    for table in tables:
+        for record in table.records:
+            ts = int(record.get_time().timestamp() * 1000)
+            field = record.get_field()
+            val = record.get_value()
+            if ts not in by_ts:
+                by_ts[ts] = {}
+            by_ts[ts][field] = val
+
+    result = []
+    for ts in sorted(by_ts.keys()):
+        d = by_ts[ts]
+        mark = d.get("mark_price")
+        index = d.get("index_price")
+        funding = d.get("funding_rate")
+        premium = None
+        if mark is not None and index is not None and index != 0:
+            premium = round((mark - index) / index * 100, 4)
+        result.append({
+            "timestamp": ts,
+            "index_price": index,
+            "mark_price": mark,
+            "premium": premium,
+            "funding_rate": round(funding * 100, 4) if funding is not None else None,
+        })
+    return {"data": result, "count": len(result)}
 
 
 @app.get("/api/exchanges")

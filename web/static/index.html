@@ -27,8 +27,10 @@
       display: flex; flex-direction: column; height: calc(100vh - 40px);
     }
     .chart-section {
-      flex: 1; display: flex; flex-direction: column; border-bottom: 1px solid #333;
+      display: flex; flex-direction: column; border-bottom: 1px solid #333;
     }
+    .chart-section.price { flex: 3; }
+    .chart-section.spread { flex: 1; }
     .chart-title {
       font-size: 11px; padding: 4px 12px; background: #16213e; color: #888;
     }
@@ -63,11 +65,11 @@
   </div>
 
   <div class="charts-container">
-    <div class="chart-section">
+    <div class="chart-section price">
       <div class="chart-title" id="price-title">Price: RAVEUSDT @ aster</div>
       <div class="chart-wrapper" id="price-chart"></div>
     </div>
-    <div class="chart-section">
+    <div class="chart-section spread">
       <div class="chart-title" id="spread-title">Spread: binance - aster</div>
       <div class="chart-wrapper" id="spread-chart"></div>
     </div>
@@ -82,34 +84,66 @@
     let priceChart = null;
     let spreadChart = null;
     let ws = null;
-    let wsSpread = null;
+
+    // --- Register custom indicators ---
+    function registerIndicators() {
+      // Index Price overlay on candle pane
+      klinecharts.registerIndicator({
+        name: 'IDX_PRICE',
+        shortName: 'Index',
+        figures: [
+          { key: 'index_price', title: 'Index: ', type: 'line' },
+        ],
+        calc: (dataList) => {
+          return dataList.map(d => ({ index_price: d.index_price || null }));
+        },
+      });
+
+      // Premium % sub-pane
+      klinecharts.registerIndicator({
+        name: 'PREMIUM',
+        shortName: 'Premium%',
+        figures: [
+          { key: 'premium', title: 'Premium: ', type: 'line' },
+        ],
+        calc: (dataList) => {
+          return dataList.map(d => ({ premium: d.premium || null }));
+        },
+      });
+
+      // Funding Rate % sub-pane
+      klinecharts.registerIndicator({
+        name: 'FUNDING',
+        shortName: 'FundingRate%',
+        figures: [
+          { key: 'funding_rate', title: 'Rate: ', type: 'line' },
+        ],
+        calc: (dataList) => {
+          return dataList.map(d => ({ funding_rate: d.funding_rate || null }));
+        },
+      });
+    }
+
+    const chartStyles = {
+      grid: { show: true, horizontal: { color: '#222' }, vertical: { color: '#222' } },
+      candle: {
+        priceMark: { last: { show: true } },
+        bar: { upColor: '#4ec9b0', downColor: '#f44747', upBorderColor: '#4ec9b0', downBorderColor: '#f44747' },
+      },
+      indicator: { ohlc: { show: false } },
+      xAxis: { tickText: { color: '#666' } },
+      yAxis: { tickText: { color: '#666' } },
+    };
 
     // Init charts
     function initCharts() {
-      priceChart = klinecharts.init('price-chart', {
-        styles: {
-          grid: { show: true, horizontal: { color: '#222' }, vertical: { color: '#222' } },
-          candle: {
-            priceMark: { last: { show: true } },
-            bar: { upColor: '#4ec9b0', downColor: '#f44747', upBorderColor: '#4ec9b0', downBorderColor: '#f44747' },
-          },
-          indicator: { ohlc: { show: false } },
-          xAxis: { tickText: { color: '#666' } },
-          yAxis: { tickText: { color: '#666' } },
-        }
-      });
+      priceChart = klinecharts.init('price-chart', { styles: chartStyles });
 
       spreadChart = klinecharts.init('spread-chart', {
         styles: {
-          grid: { show: true, horizontal: { color: '#222' }, vertical: { color: '#222' } },
+          ...chartStyles,
           candle: {
-            priceMark: {
-              last: {
-                show: true,
-                text: { show: true },
-              },
-            },
-            bar: { upColor: '#4ec9b0', downColor: '#f44747', upBorderColor: '#4ec9b0', downBorderColor: '#f44747' },
+            ...chartStyles.candle,
             tooltip: {
               custom: [
                 { title: 'open', value: '{open}%' },
@@ -119,20 +153,19 @@
               ],
             },
           },
-          indicator: { ohlc: { show: false } },
-          xAxis: { tickText: { color: '#666' } },
-          yAxis: {
-            tickText: { color: '#666' },
-          },
         },
         customApi: {
           formatPrice: (price) => price.toFixed(2) + '%',
         },
       });
 
-      // Add default indicators
+      // Price chart: MA on candle + index price overlay + premium pane + funding rate pane
       priceChart.createIndicator('MA', false, { id: 'candle_pane' });
-      priceChart.createIndicator('VOL');
+      priceChart.createIndicator('IDX_PRICE', false, { id: 'candle_pane' });
+      priceChart.createIndicator('PREMIUM', false, { id: 'premium_pane', height: 80 });
+      priceChart.createIndicator('FUNDING', false, { id: 'funding_pane', height: 80 });
+
+      // Spread chart: MA + MACD
       spreadChart.createIndicator('MA', false, { id: 'candle_pane' });
       spreadChart.createIndicator('MACD');
     }
@@ -185,20 +218,22 @@
         priceChart.updateData(bar);
       };
       ws.onclose = (e) => {
-        // Only reconnect if not intentionally closed
         if (e.code !== 1000) {
           setTimeout(connectPriceWS, 3000);
         }
       };
     }
 
-    // Spread uses HTTP polling (needs two exchanges computed server-side)
-    setInterval(() => { loadSpreadData(); }, 5000);
+    // Spread + index data polling
+    setInterval(() => {
+      loadSpreadData();
+      loadPriceData();  // refresh to get latest index/premium/funding data
+    }, 5000);
 
     // Event handlers
     document.getElementById('exchange').addEventListener('change', (e) => {
       currentExchange = e.target.value;
-      loadPriceData();
+      loadAllData();
       connectPriceWS();
     });
 
@@ -217,6 +252,7 @@
     });
 
     // Init
+    registerIndicators();
     initCharts();
     loadAllData();
     connectPriceWS();
