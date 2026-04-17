@@ -253,7 +253,7 @@ export function TradingView({ symbol, exchangeA, exchangeB }: TradingViewProps) 
             boxShadow: connected ? `0 0 8px ${latencyColor(wsLatency)}` : 'none',
             display: 'inline-block',
           }} />
-          <span style={{ fontSize: 12, color: connected ? latencyColor(wsLatency) : 'var(--accent-red)', fontFamily: 'var(--font-mono)' }}>
+          <span style={{ display: 'inline-block', minWidth: 60, textAlign: 'right', fontSize: 12, color: connected ? latencyColor(wsLatency) : 'var(--accent-red)', fontFamily: 'var(--font-mono)' }}>
             {connected
               ? wsLatency !== null ? `${wsLatency}ms` : 'LIVE'
               : 'OFFLINE'}
@@ -513,7 +513,7 @@ function ExchangeBadge({ name, color, ageMs }: { name: string; color: string; ag
     <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 12, fontWeight: 600, color, background: `${color}15`, padding: '3px 10px', borderRadius: 6 }}>
       {name.toUpperCase()}
       {ageMs !== undefined && (
-        <span style={{ fontSize: 10, fontFamily: 'var(--font-mono)', color: exchangeAgeColor(ageMs), fontWeight: 400 }}>
+        <span style={{ display: 'inline-block', width: 42, textAlign: 'right', fontSize: 10, fontFamily: 'var(--font-mono)', color: exchangeAgeColor(ageMs), fontWeight: 400 }}>
           {ageMs}ms
         </span>
       )}
