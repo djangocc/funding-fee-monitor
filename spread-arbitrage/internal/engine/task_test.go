@@ -82,11 +82,13 @@ func TestTaskManager_CreateAndGet(t *testing.T) {
 func TestTaskManager_List(t *testing.T) {
 	tm := NewTaskManager()
 
-	// Create 3 tasks
-	req1 := validShortSpreadReq()
+	// Create 3 tasks with different symbol+exchange combos (unique constraint)
+	req1 := validShortSpreadReq()         // RAVEUSDT binance/aster
 	req2 := validLongSpreadReq()
+	req2.ExchangeA = "binance"
+	req2.ExchangeB = "okx"                // RAVEUSDT binance/okx
 	req3 := validShortSpreadReq()
-	req3.Symbol = "BTCUSDT"
+	req3.Symbol = "BTCUSDT"               // BTCUSDT binance/aster
 
 	task1, err := tm.Create(req1)
 	if err != nil {

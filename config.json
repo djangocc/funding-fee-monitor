@@ -5,5 +5,5 @@
       "exchanges": ["aster", "binance", "okx"]
     }
   ],
-  "refresh_interval_seconds": 60
+  "refresh_interval_seconds": 15
 }

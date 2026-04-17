@@ -64,23 +64,25 @@ type TaskCreateRequest struct {
 	ExchangeA        string    `json:"exchange_a" binding:"required"`
 	ExchangeB        string    `json:"exchange_b" binding:"required"`
 	Direction        Direction `json:"direction" binding:"required"`
-	OpenThreshold    float64   `json:"open_threshold" binding:"required"`
-	CloseThreshold   float64   `json:"close_threshold" binding:"required"`
-	ConfirmCount     int       `json:"confirm_count" binding:"required"`
-	QuantityPerOrder float64   `json:"quantity_per_order" binding:"required"`
-	MaxPositionQty   float64   `json:"max_position_qty" binding:"required"`
-	DataMaxLatencyMs int64     `json:"data_max_latency_ms" binding:"required"`
+	OpenThreshold    float64   `json:"open_threshold"`
+	CloseThreshold   float64   `json:"close_threshold"`
+	ConfirmCount     int       `json:"confirm_count"`
+	QuantityPerOrder float64   `json:"quantity_per_order"`
+	MaxPositionQty   float64   `json:"max_position_qty"`
+	DataMaxLatencyMs int64     `json:"data_max_latency_ms"`
 }
 
 // Order represents a submitted order result
 type Order struct {
-	Exchange  string    `json:"exchange"`
-	Symbol    string    `json:"symbol"`
-	Side      string    `json:"side"` // "BUY" or "SELL"
-	Quantity  float64   `json:"quantity"`
-	Price     float64   `json:"price"` // fill price
-	OrderID   string    `json:"order_id"`
-	Timestamp time.Time `json:"timestamp"`
+	Exchange      string    `json:"exchange"`
+	Symbol        string    `json:"symbol"`
+	Side          string    `json:"side"` // "BUY" or "SELL"
+	Quantity      float64   `json:"quantity"`
+	Price         float64   `json:"price"` // avg fill price
+	OrderID       string    `json:"order_id"`
+	ClientOrderID string    `json:"client_order_id"`
+	Status        string    `json:"status"` // NEW, FILLED, CANCELED, etc.
+	Timestamp     time.Time `json:"timestamp"`
 }
 
 // Position from exchange
@@ -103,6 +105,16 @@ type Trade struct {
 	Fee       float64   `json:"fee"`
 	Timestamp time.Time `json:"timestamp"`
 	OrderID   string    `json:"order_id"`
+}
+
+// FundingRate represents funding rate info from an exchange
+type FundingRate struct {
+	Exchange        string  `json:"exchange"`
+	Symbol          string  `json:"symbol"`
+	Rate            float64 `json:"rate"`             // current funding rate
+	NextFundingTime int64   `json:"next_funding_time"` // unix ms
+	MarkPrice       float64 `json:"mark_price"`
+	IndexPrice      float64 `json:"index_price"`
 }
 
 // WSEvent is pushed to frontend via WebSocket

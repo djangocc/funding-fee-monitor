@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"spread-arbitrage/internal/api"
 	"spread-arbitrage/internal/engine"
@@ -18,8 +19,8 @@ func main() {
 
 	// Create exchange clients
 	clients := map[string]exchange.Client{
-		"binance": exchange.NewBinanceClient(cfg.Binance.APIKey, cfg.Binance.APISecret),
-		"aster":   exchange.NewAsterClient(cfg.Aster.APIKey, cfg.Aster.APISecret),
+		"binance": exchange.NewBinanceClient(cfg.Binance.APIKey, cfg.Binance.APISecret, cfg.Binance.Unified),
+		"aster":   exchange.NewAsterClient(cfg.Aster.User, cfg.Aster.Signer, cfg.Aster.PrivateKey),
 		"okx":     exchange.NewOKXClient(cfg.OKX.APIKey, cfg.OKX.APISecret, cfg.OKX.Passphrase),
 	}
 
@@ -66,6 +67,9 @@ func main() {
 		hub.Broadcast(event)
 	})
 
+	// Start background position sync (every 10 seconds)
+	eng.StartPositionSync(10 * time.Second)
+
 	// Start HTTP server
 	server := api.NewServer(eng, taskMgr, clients, hub, wsMgr)
 	go func() {
@@ -80,6 +84,7 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 	log.Println("Shutting down...")
+	eng.StopPositionSync()
 	wsMgr.Close()
 	for _, c := range clients {
 		c.Close()

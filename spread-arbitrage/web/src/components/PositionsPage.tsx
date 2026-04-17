@@ -123,7 +123,7 @@ export function PositionsPage() {
                     <td style={{ padding: '10px 14px', fontSize: 12, fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)' }}>
                       {t.open_threshold} / {t.close_threshold}
                     </td>
-                    <td style={{ padding: '10px 14px', fontSize: 12, fontFamily: 'var(--font-mono)' }}>{t.position_qty ?? 0}</td>
+                    <td style={{ padding: '10px 14px', fontSize: 12, fontFamily: 'var(--font-mono)' }}>{t.current_position ?? 0}</td>
                   </tr>
                 ))}
               </tbody>

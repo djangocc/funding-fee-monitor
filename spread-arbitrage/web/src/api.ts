@@ -13,7 +13,7 @@ export interface Task {
   quantity_per_order: number
   max_position_qty: number
   data_max_latency_ms: number
-  position_qty?: number
+  current_position?: number
 }
 
 export interface TaskCreateRequest {
@@ -38,15 +38,16 @@ export interface Position {
   unrealized_pnl: number
 }
 
-export interface Trade {
+export interface Order {
   exchange: string
   symbol: string
   side: string
   quantity: number
   price: number
-  fee: number
-  timestamp: string
   order_id: string
+  client_order_id: string
+  status: string
+  timestamp: string
 }
 
 export async function listTasks(): Promise<Task[]> {
@@ -106,7 +107,7 @@ export async function getPositions(id: string): Promise<Position[]> {
   return res.json()
 }
 
-export async function getTrades(id: string): Promise<Trade[]> {
+export async function getTrades(id: string): Promise<Order[]> {
   const res = await fetch(`${BASE}/tasks/${id}/trades`)
   if (!res.ok) throw new Error(await res.text())
   return res.json()
@@ -136,8 +137,40 @@ export async function getPositionByExchange(exchange: string, symbol: string): P
   return res.json()
 }
 
-export async function getTradesByExchange(exchange: string, symbol: string): Promise<Trade[]> {
-  const res = await fetch(`${BASE}/trades/${exchange}/${symbol}`)
+export async function getOrdersByExchange(exchange: string, symbol: string): Promise<Order[]> {
+  const res = await fetch(`${BASE}/orders/${exchange}/${symbol}`)
+  if (!res.ok) throw new Error(await res.text())
+  return res.json()
+}
+
+export interface TestTradeResult {
+  exchange: string
+  success: boolean
+  symbol: string
+  quantity: number
+  buy_order?: any
+  sell_order?: any
+  error?: string
+  steps: string[]
+}
+
+export async function testTrade(exchange: string): Promise<TestTradeResult> {
+  const res = await fetch(`${BASE}/test-trade/${exchange}`, { method: 'POST' })
+  if (!res.ok) throw new Error(await res.text())
+  return res.json()
+}
+
+export interface FundingRate {
+  exchange: string
+  symbol: string
+  rate: number
+  next_funding_time: number
+  mark_price: number
+  index_price: number
+}
+
+export async function getFundingRate(exchange: string, symbol: string): Promise<FundingRate> {
+  const res = await fetch(`${BASE}/funding/${exchange}/${symbol}`)
   if (!res.ok) throw new Error(await res.text())
   return res.json()
 }

@@ -121,3 +121,10 @@ func (se *SpreadEvaluator) CurrentSpread(a, b model.BookTicker) float64 {
 func (se *SpreadEvaluator) Counters() (int, int) {
 	return se.openCounter.Current(), se.closeCounter.Current()
 }
+
+// Reset resets both confirm counters. Called after a successful trade
+// to prevent queued ticks from immediately triggering another trade.
+func (se *SpreadEvaluator) Reset() {
+	se.openCounter.Reset()
+	se.closeCounter.Reset()
+}

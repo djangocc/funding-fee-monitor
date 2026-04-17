@@ -239,6 +239,14 @@ class FundingMonitor:
         self.funding_data = {}
 
         self.root = tk.Tk()
+
+        # Configurable thresholds (平仓: alert when diff > val, 开仓: alert when diff < val)
+        self._thresholds = {
+            "bn_close": tk.StringVar(value="-0.1"),
+            "okx_close": tk.StringVar(value="0.7"),
+            "bn_open": tk.StringVar(value="-0.3"),
+            "okx_open": tk.StringVar(value="0.35"),
+        }
         self.root.title("Funding Rate")
         self.root.configure(bg=self.BG)
         self.root.attributes("-topmost", True)
@@ -393,6 +401,31 @@ class FundingMonitor:
         self.alert_label.grid(row=row_idx, column=0, columnspan=6, sticky="w", padx=8, pady=(4, 0))
         row_idx += 1
 
+        # Threshold config rows
+        for ex_label, ex_key in [("BN", "bn"), ("OKX", "okx")]:
+            tf = tk.Frame(self.root, bg=self.BG)
+            tf.grid(row=row_idx, column=0, columnspan=6, sticky="w", padx=8, pady=(2, 0))
+
+            tk.Label(tf, text=f"{ex_label}", font=("Menlo", 8, "bold"),
+                     bg=self.BG, fg="#888888", width=4, anchor="w").pack(side="left")
+
+            tk.Label(tf, text="开<", font=("Menlo", 8),
+                     bg=self.BG, fg=self.GREEN).pack(side="left")
+            e_open = tk.Entry(tf, textvariable=self._thresholds[f"{ex_key}_open"],
+                              font=("Menlo", 8), width=6, bg="#2a2a2a", fg="#cccccc",
+                              insertbackground="#cccccc", relief="flat", bd=1,
+                              highlightbackground="#444444", highlightcolor=self.GREEN)
+            e_open.pack(side="left", padx=(0, 6))
+
+            tk.Label(tf, text="平>", font=("Menlo", 8),
+                     bg=self.BG, fg=self.RED).pack(side="left")
+            e_close = tk.Entry(tf, textvariable=self._thresholds[f"{ex_key}_close"],
+                               font=("Menlo", 8), width=6, bg="#2a2a2a", fg="#cccccc",
+                               insertbackground="#cccccc", relief="flat", bd=1,
+                               highlightbackground="#444444", highlightcolor=self.RED)
+            e_close.pack(side="left", padx=(0, 4))
+            row_idx += 1
+
         self.price_status = tk.Label(
             self.root, text="Price: --", font=("Menlo", 8),
             bg=self.BG, fg="#555555", anchor="w",
@@ -404,7 +437,61 @@ class FundingMonitor:
             self.root, text="Rate: --", font=("Menlo", 8),
             bg=self.BG, fg="#555555", anchor="w",
         )
-        self.rate_status.grid(row=row_idx, column=0, columnspan=6, sticky="w", padx=8, pady=(0, 6))
+        self.rate_status.grid(row=row_idx, column=0, columnspan=4, sticky="w", padx=8, pady=(0, 6))
+
+        self.copy_btn = tk.Label(
+            self.root, text="[Copy]", font=("Menlo", 8),
+            bg=self.BG, fg="#888888", cursor="hand2", anchor="e",
+        )
+        self.copy_btn.grid(row=row_idx, column=4, columnspan=2, sticky="e", padx=(0, 8), pady=(0, 6))
+        self.copy_btn.bind("<Button-1>", lambda e: self._copy_to_clipboard())
+
+    def _build_copy_text(self) -> str:
+        lines = []
+        now = datetime.now().strftime("%H:%M:%S")
+
+        for pair in self.pairs:
+            sym = pair["symbol"]
+            lines.append(f"【{sym}】{now}")
+
+            # Collect rows sorted by rate (same as display)
+            rows = []
+            for ex in pair["exchanges"]:
+                rate = self.funding_data.get((sym, ex), {}).get("rate")
+                rows.append((ex, rate))
+            rows.sort(key=lambda r: (r[1] is None, r[1] if r[1] is not None else 0))
+
+            aster_data = self.price_mgr.prices.get((sym, "aster"))
+            aster_price = aster_data["price"] if aster_data else None
+
+            for ex, rate in rows:
+                ws_data = self.price_mgr.prices.get((sym, ex))
+                price_str = f"{ws_data['price']:.4f}" if ws_data else "--"
+                rate_str = f"{rate * 100:+.4f}%" if rate is not None else "N/A"
+
+                ex_short = {"aster": "A", "binance": "B", "okx": "O"}.get(ex, ex)
+                line = f"{ex_short} {price_str} | {rate_str}"
+
+                if ex != "aster" and aster_price and ws_data:
+                    diff = ws_data["price"] - aster_price
+                    prem = diff / aster_price * 100
+                    line += f" | 差{prem:+.2f}%"
+
+                lines.append(line)
+
+        alert_text = self.alert_label.cget("text")
+        if alert_text:
+            lines.append(f"⚠️{alert_text}")
+
+        return "\n".join(lines)
+
+    def _copy_to_clipboard(self):
+        text = self._build_copy_text()
+        self.root.clipboard_clear()
+        self.root.clipboard_append(text)
+        # Brief visual feedback
+        self.copy_btn.config(text="[Copied!]", fg=self.GREEN)
+        self.root.after(1500, lambda: self.copy_btn.config(text="[Copy]", fg="#888888"))
 
     def _toggle_mute(self, key):
         self._mute[key] = not self._mute[key]
@@ -528,15 +615,22 @@ class FundingMonitor:
         except Exception:
             traceback.print_exc()
 
+    def _get_threshold(self, key: str) -> float | None:
+        try:
+            return float(self._thresholds[key].get())
+        except (ValueError, KeyError):
+            return None
+
     def _check_price_spread(self):
         """Check spread rules and alert accordingly."""
-        RULES = [
-            # (key, exchange, condition_fn, threshold_desc, color, action)
-            ("bn_close",  "binance", lambda d: d > -0.1,  "BN-Aster",  "#ff6666", "平仓"),
-            ("okx_close", "okx",     lambda d: d > 0.7,   "OKX-Aster", "#ff6666", "平仓"),
-            ("bn_open",   "binance", lambda d: d < -0.3,  "BN-Aster",  self.GREEN, "开仓"),
-            ("okx_open",  "okx",     lambda d: d < 0.35,  "OKX-Aster", self.GREEN, "开仓"),
-        ]
+        RULES = []
+        for ex_key, exchange, label in [("bn", "binance", "BN-Aster"), ("okx", "okx", "OKX-Aster")]:
+            t_close = self._get_threshold(f"{ex_key}_close")
+            t_open = self._get_threshold(f"{ex_key}_open")
+            if t_close is not None:
+                RULES.append((f"{ex_key}_close", exchange, lambda d, t=t_close: d > t, label, "#ff6666", "平仓"))
+            if t_open is not None:
+                RULES.append((f"{ex_key}_open", exchange, lambda d, t=t_open: d < t, label, self.GREEN, "开仓"))
 
         alerts = []
         for pair in self.pairs:

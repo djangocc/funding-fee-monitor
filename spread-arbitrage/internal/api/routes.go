@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"sort"
 
@@ -46,9 +47,13 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.POST("/subscribe", h.Subscribe)
 	api.POST("/unsubscribe", h.Unsubscribe)
 
-	// Query positions/trades by exchange+symbol directly (no task required)
+	// Test trading connectivity
+	api.POST("/test-trade/:exchange", h.TestTrade)
+
+	// Query positions/trades/funding by exchange+symbol directly (no task required)
 	api.GET("/positions/:exchange/:symbol", h.GetPositionsByExchange)
-	api.GET("/trades/:exchange/:symbol", h.GetTradesByExchange)
+	api.GET("/orders/:exchange/:symbol", h.GetOrdersByExchange)
+	api.GET("/funding/:exchange/:symbol", h.GetFundingRate)
 
 	r.GET("/ws", h.HandleWebSocket)
 }
@@ -211,7 +216,7 @@ func (h *Handler) GetPositions(c *gin.Context) {
 	c.JSON(http.StatusOK, positions)
 }
 
-// GetTrades returns trades from both exchanges for a task, sorted by timestamp desc
+// GetTrades returns orders from both exchanges for a task, sorted by timestamp desc
 func (h *Handler) GetTrades(c *gin.Context) {
 	id := c.Param("id")
 	ctx := context.Background()
@@ -222,18 +227,15 @@ func (h *Handler) GetTrades(c *gin.Context) {
 		return
 	}
 
-	// Get trades from both exchanges
 	clientA, okA := h.clients[task.ExchangeA]
 	clientB, okB := h.clients[task.ExchangeB]
-
 	if !okA || !okB {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "exchange client not found"})
 		return
 	}
 
-	tradesA, errA := clientA.GetTrades(ctx, task.Symbol)
-	tradesB, errB := clientB.GetTrades(ctx, task.Symbol)
-
+	ordersA, errA := clientA.GetOrders(ctx, task.Symbol)
+	ordersB, errB := clientB.GetOrders(ctx, task.Symbol)
 	if errA != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": errA.Error()})
 		return
@@ -243,13 +245,12 @@ func (h *Handler) GetTrades(c *gin.Context) {
 		return
 	}
 
-	// Merge and sort by timestamp descending
-	allTrades := append(tradesA, tradesB...)
-	sort.Slice(allTrades, func(i, j int) bool {
-		return allTrades[i].Timestamp.After(allTrades[j].Timestamp)
+	allOrders := append(ordersA, ordersB...)
+	sort.Slice(allOrders, func(i, j int) bool {
+		return allOrders[i].Timestamp.After(allOrders[j].Timestamp)
 	})
 
-	c.JSON(http.StatusOK, allTrades)
+	c.JSON(http.StatusOK, allOrders)
 }
 
 // Subscribe subscribes to market data for an exchange+symbol pair
@@ -319,8 +320,8 @@ func (h *Handler) GetPositionsByExchange(c *gin.Context) {
 	c.JSON(http.StatusOK, pos)
 }
 
-// GetTradesByExchange returns trades for a specific exchange+symbol
-func (h *Handler) GetTradesByExchange(c *gin.Context) {
+// GetOrdersByExchange returns orders (委托记录) for a specific exchange+symbol
+func (h *Handler) GetOrdersByExchange(c *gin.Context) {
 	exchangeName := c.Param("exchange")
 	symbol := c.Param("symbol")
 	ctx := context.Background()
@@ -331,14 +332,123 @@ func (h *Handler) GetTradesByExchange(c *gin.Context) {
 		return
 	}
 
-	trades, err := client.GetTrades(ctx, symbol)
+	orders, err := client.GetOrders(ctx, symbol)
 	if err != nil {
-		// Return empty array instead of 500 (API key may not be configured)
-		c.JSON(http.StatusOK, []model.Trade{})
+		c.JSON(http.StatusOK, []model.Order{})
 		return
 	}
 
-	c.JSON(http.StatusOK, trades)
+	c.JSON(http.StatusOK, orders)
+}
+
+// TestTrade performs a small buy+sell to verify exchange connectivity and trading permissions.
+// Uses DOGEUSDT with minimum quantity (~5 USDT).
+func (h *Handler) TestTrade(c *gin.Context) {
+	exchangeName := c.Param("exchange")
+	ctx := context.Background()
+
+	client, ok := h.clients[exchangeName]
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "unknown exchange: " + exchangeName})
+		return
+	}
+
+	// Test parameters: DOGEUSDT, small quantity
+	// Binance/Aster: min notional 5 USDT, DOGE ~$0.1, so 55 DOGE ≈ $5.5
+	// OKX: DOGE-USDT-SWAP ctVal=1000, minSz=0.01 → 10 DOGE ≈ $1
+	symbol := "DOGEUSDT"
+	var qty float64
+	if exchangeName == "okx" {
+		qty = 10
+	} else {
+		qty = 55
+	}
+
+	type testResult struct {
+		Exchange      string      `json:"exchange"`
+		Success       bool        `json:"success"`
+		Symbol        string      `json:"symbol"`
+		Quantity      float64     `json:"quantity"`
+		BuyOrder      interface{} `json:"buy_order,omitempty"`
+		SellOrder     interface{} `json:"sell_order,omitempty"`
+		Error         string      `json:"error,omitempty"`
+		Steps         []string    `json:"steps"`
+		PositionCheck interface{} `json:"position_check,omitempty"`
+	}
+
+	result := testResult{
+		Exchange: exchangeName,
+		Symbol:   symbol,
+		Quantity: qty,
+		Steps:    []string{},
+	}
+
+	// Step 0: Test read-only access first (GetPosition)
+	result.Steps = append(result.Steps, "Testing API key with read-only request (GetPosition)...")
+	pos, posErr := client.GetPosition(ctx, symbol)
+	if posErr != nil {
+		result.Steps = append(result.Steps, "READ-ONLY TEST FAILED: "+posErr.Error())
+		result.Steps = append(result.Steps, "Possible causes: invalid API key, IP whitelist restriction, or missing Futures permission")
+		result.Error = "API key validation failed: " + posErr.Error()
+		c.JSON(http.StatusOK, result)
+		return
+	}
+	result.PositionCheck = pos
+	result.Steps = append(result.Steps, fmt.Sprintf("READ-ONLY OK: position side=%s size=%.4f", pos.Side, pos.Size))
+
+	// Step 1: Buy
+	result.Steps = append(result.Steps, "Placing BUY order...")
+	buyOrder, err := client.PlaceMarketOrder(ctx, symbol, "BUY", qty, "sa-test-buy")
+	if err != nil {
+		result.Error = "BUY failed: " + err.Error()
+		result.Steps = append(result.Steps, "BUY FAILED: "+err.Error())
+		c.JSON(http.StatusOK, result)
+		return
+	}
+	result.BuyOrder = buyOrder
+	result.Steps = append(result.Steps, "BUY OK: orderId="+buyOrder.OrderID)
+
+	// Step 2: Sell (close)
+	result.Steps = append(result.Steps, "Placing SELL order to close...")
+	sellOrder, err := client.PlaceMarketOrder(ctx, symbol, "SELL", qty, "sa-test-sell")
+	if err != nil {
+		result.Error = "SELL failed (position may remain open!): " + err.Error()
+		result.Steps = append(result.Steps, "SELL FAILED: "+err.Error())
+		c.JSON(http.StatusOK, result)
+		return
+	}
+	result.SellOrder = sellOrder
+	result.Steps = append(result.Steps, "SELL OK: orderId="+sellOrder.OrderID)
+
+	result.Success = true
+	result.Steps = append(result.Steps, "Test complete: account can trade on "+exchangeName)
+	c.JSON(http.StatusOK, result)
+}
+
+// GetFundingRate returns funding rate for a specific exchange+symbol
+func (h *Handler) GetFundingRate(c *gin.Context) {
+	exchangeName := c.Param("exchange")
+	symbol := c.Param("symbol")
+	ctx := context.Background()
+
+	client, ok := h.clients[exchangeName]
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "unknown exchange: " + exchangeName})
+		return
+	}
+
+	fr, err := client.GetFundingRate(ctx, symbol)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"exchange": exchangeName,
+			"symbol":   symbol,
+			"rate":     0,
+			"error":    err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, fr)
 }
 
 // HandleWebSocket upgrades connection and registers with hub

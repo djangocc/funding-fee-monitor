@@ -8,7 +8,69 @@
   "pairs": [
     {
       "symbol": "RAVEUSDT",
-      "exchanges": ["aster", "binance", "okx"]
+      "exchanges": [
+        "aster",
+        "binance",
+        "okx"
+      ]
     }
-  ]
+  ],
+  "platform_profiles": {
+    "binance": {
+      "sampling_interval_sec": 5,
+      "avg_method_1h": "equal",
+      "avg_method_gt1h": "time_weighted",
+      "fr_formula": "binance",
+      "cap_floor_source": "api_or_maint_margin",
+      "cap_floor_factor": 0.75
+    },
+    "aster": {
+      "sampling_interval_sec": 5,
+      "avg_method_1h": "equal",
+      "avg_method_gt1h": "time_weighted",
+      "fr_formula": "binance",
+      "cap_floor_source": "api_or_maint_margin",
+      "cap_floor_factor": 0.75
+    },
+    "okx": {
+      "sampling_interval_sec": 60,
+      "avg_method_1h": "time_weighted",
+      "avg_method_gt1h": "time_weighted",
+      "fr_formula": "okx",
+      "cap_floor_source": "api_direct"
+    }
+  },
+  "symbol_params": {
+    "RAVEUSDT": {
+      "binance": {
+        "max_leverage": 20,
+        "impact_notional": 4000,
+        "funding_interval_hours": 1,
+        "interest_rate": 0.0001,
+        "funding_rate_cap": 0.02,
+        "funding_rate_floor": -0.02,
+        "maint_margin_ratio": 0.025,
+        "_last_synced": "2026-04-17T01:48:12Z"
+      },
+      "aster": {
+        "max_leverage": 5,
+        "impact_notional": 1000,
+        "funding_interval_hours": 1,
+        "interest_rate": 0.0001,
+        "funding_rate_cap": null,
+        "funding_rate_floor": null,
+        "maint_margin_ratio": 0.1,
+        "_last_synced": "2026-04-17T01:48:12Z"
+      },
+      "okx": {
+        "max_leverage": 20,
+        "impact_notional": 4000.0,
+        "funding_interval_hours": 1,
+        "interest_rate": 1.25e-05,
+        "funding_rate_cap": 0.015,
+        "funding_rate_floor": -0.015,
+        "_last_synced": "2026-04-17T01:48:12Z"
+      }
+    }
+  }
 }

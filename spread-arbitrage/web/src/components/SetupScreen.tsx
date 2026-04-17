@@ -16,8 +16,19 @@ export function SetupScreen() {
   const [exchangeA, setExchangeA] = useState('binance')
   const [exchangeB, setExchangeB] = useState('aster')
   const [tasks, setTasks] = useState<api.Task[]>([])
+  const [testResults, setTestResults] = useState<Record<string, { loading: boolean; result?: api.TestTradeResult; error?: string }>>({})
 
   const canEnter = symbol.length > 0 && exchangeA !== exchangeB
+
+  const handleTestTrade = async (exchange: string) => {
+    setTestResults(prev => ({ ...prev, [exchange]: { loading: true } }))
+    try {
+      const result = await api.testTrade(exchange)
+      setTestResults(prev => ({ ...prev, [exchange]: { loading: false, result } }))
+    } catch (e: any) {
+      setTestResults(prev => ({ ...prev, [exchange]: { loading: false, error: e.message } }))
+    }
+  }
 
   useEffect(() => {
     api.listTasks().then(setTasks).catch(() => {})
@@ -66,8 +77,20 @@ export function SetupScreen() {
             <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: 8 }}>Symbol</div>
             <SymbolSearch value={symbol} onChange={setSymbol} placeholder="Search symbol..." />
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 28 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr auto 1fr', gap: 10, alignItems: 'end', marginBottom: 28 }}>
             <ExchangePicker label="Exchange A" value={exchangeA} disabledValue={exchangeB} onChange={setExchangeA} />
+            <button
+              onClick={() => { setExchangeA(exchangeB); setExchangeB(exchangeA) }}
+              style={{
+                background: 'none', border: '1px solid var(--border)', borderRadius: 8,
+                color: 'var(--text-dim)', cursor: 'pointer', padding: '8px 10px',
+                fontSize: 16, lineHeight: 1, marginBottom: 1,
+                transition: 'all 0.15s',
+              }}
+              onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--accent-blue)'; e.currentTarget.style.color = 'var(--accent-blue)' }}
+              onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.color = 'var(--text-dim)' }}
+              title="交换 A / B"
+            >⇄</button>
             <ExchangePicker label="Exchange B" value={exchangeB} disabledValue={exchangeA} onChange={setExchangeB} />
           </div>
           <button
@@ -84,6 +107,62 @@ export function SetupScreen() {
           >
             Enter Trading View
           </button>
+        </div>
+
+        {/* Test Trading Section */}
+        <div style={{
+          background: 'var(--bg-panel)', border: '1px solid var(--border)', borderRadius: 14,
+          padding: 20, marginBottom: 32,
+        }}>
+          <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>交易连通性测试</div>
+          <div style={{ fontSize: 12, color: 'var(--text-dim)', marginBottom: 16 }}>
+            使用 DOGEUSDT 进行一次最小金额的买入+卖出（约 5 USDT），验证 API Key 和交易权限是否正常
+          </div>
+          <div style={{ display: 'flex', gap: 10 }}>
+            {['binance', 'aster', 'okx'].map(ex => {
+              const state = testResults[ex]
+              const color = EXCHANGE_COLORS[ex]
+              return (
+                <div key={ex} style={{ flex: 1 }}>
+                  <button
+                    onClick={() => handleTestTrade(ex)}
+                    disabled={state?.loading}
+                    style={{
+                      width: '100%', padding: '10px 0', border: `1px solid ${color}40`,
+                      borderRadius: 8, background: state?.loading ? 'var(--bg-hover)' : `${color}10`,
+                      color: state?.loading ? 'var(--text-dim)' : color,
+                      fontFamily: 'var(--font-display)', fontSize: 13, fontWeight: 600,
+                      cursor: state?.loading ? 'wait' : 'pointer',
+                    }}
+                  >
+                    {state?.loading ? '测试中...' : `测试 ${ex.toUpperCase()}`}
+                  </button>
+                  {state && !state.loading && (
+                    <div style={{ marginTop: 8, fontSize: 11, lineHeight: 1.6 }}>
+                      {state.result?.success ? (
+                        <div style={{ color: 'var(--accent-green)' }}>
+                          通过 — 买卖均正常
+                        </div>
+                      ) : state.result?.error ? (
+                        <div style={{ color: 'var(--accent-red)' }}>
+                          失败: {state.result.error}
+                        </div>
+                      ) : state.error ? (
+                        <div style={{ color: 'var(--accent-red)' }}>
+                          请求失败: {state.error}
+                        </div>
+                      ) : null}
+                      {state.result?.steps?.map((step, i) => (
+                        <div key={i} style={{ color: 'var(--text-dim)', fontFamily: 'var(--font-mono)', fontSize: 10 }}>
+                          {step}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )
+            })}
+          </div>
         </div>
 
         {/* Active tasks overview */}
@@ -141,7 +220,7 @@ export function SetupScreen() {
                       animation: t.status === 'running' ? 'pulse 2s infinite' : 'none',
                     }} />
                     <span style={{ fontSize: 11, color: 'var(--text-dim)', fontFamily: 'var(--font-mono)' }}>
-                      pos: {t.position_qty ?? 0}
+                      pos: {t.current_position ?? 0}
                     </span>
                   </div>
                 </div>

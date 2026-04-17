@@ -39,6 +39,13 @@ func (tm *TaskManager) Create(req model.TaskCreateRequest) (*model.Task, error) 
 	}
 
 	tm.mu.Lock()
+	// Check for duplicate: same symbol + exchangeA + exchangeB
+	for _, existing := range tm.tasks {
+		if existing.Symbol == task.Symbol && existing.ExchangeA == task.ExchangeA && existing.ExchangeB == task.ExchangeB {
+			tm.mu.Unlock()
+			return nil, fmt.Errorf("该币对（%s %s/%s）已存在套利任务，同一币对只能有一个任务", task.Symbol, task.ExchangeA, task.ExchangeB)
+		}
+	}
 	tm.tasks[task.ID] = task
 	tm.mu.Unlock()
 

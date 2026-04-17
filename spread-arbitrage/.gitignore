@@ -2,3 +2,5 @@
 node_modules/
 dist/
 web/dist/
+spread-arbitrage
+.playwright-cli/

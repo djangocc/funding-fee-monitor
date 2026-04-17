@@ -8,7 +8,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
+	"sort"
 	"spread-arbitrage/internal/model"
 	"strconv"
 	"strings"
@@ -91,8 +93,11 @@ func (c *OKXClient) doRequest(method, endpoint, body string) ([]byte, error) {
 	req.Header.Set("OK-ACCESS-PASSPHRASE", c.passphrase)
 	req.Header.Set("Content-Type", "application/json")
 
+	start := time.Now()
 	resp, err := c.httpClient.Do(req)
+	elapsed := time.Since(start)
 	if err != nil {
+		log.Printf("[%s] REST %s %s FAILED after %dms: %v", c.name, method, endpoint, elapsed.Milliseconds(), err)
 		return nil, fmt.Errorf("http request: %w", err)
 	}
 	defer resp.Body.Close()
@@ -103,9 +108,11 @@ func (c *OKXClient) doRequest(method, endpoint, body string) ([]byte, error) {
 	}
 
 	if resp.StatusCode != http.StatusOK {
+		log.Printf("[%s] REST %s %s status=%d latency=%dms body=%s", c.name, method, endpoint, resp.StatusCode, elapsed.Milliseconds(), string(respBody))
 		return nil, fmt.Errorf("request failed (%d): %s", resp.StatusCode, string(respBody))
 	}
 
+	log.Printf("[%s] REST %s %s status=200 latency=%dms", c.name, method, endpoint, elapsed.Milliseconds())
 	return respBody, nil
 }
 
@@ -427,8 +434,9 @@ type okxOrderResponse struct {
 }
 
 // PlaceMarketOrder places a market order on OKX
-func (c *OKXClient) PlaceMarketOrder(ctx context.Context, symbol string, side string, quantity float64) (*model.Order, error) {
+func (c *OKXClient) PlaceMarketOrder(ctx context.Context, symbol string, side string, quantity float64, clientOrderID string) (*model.Order, error) {
 	instID := symbolToInstID(symbol)
+	log.Printf("[%s] ORDER REQUEST: %s %s(%s) qty=%.8f clientOrderId=%s", c.name, side, symbol, instID, quantity, clientOrderID)
 
 	orderReq := map[string]interface{}{
 		"instId":  instID,
@@ -436,6 +444,9 @@ func (c *OKXClient) PlaceMarketOrder(ctx context.Context, symbol string, side st
 		"side":    strings.ToLower(side),
 		"sz":      fmt.Sprintf("%.8f", quantity),
 		"ordType": "market",
+	}
+	if clientOrderID != "" {
+		orderReq["clOrdId"] = clientOrderID
 	}
 
 	bodyBytes, err := json.Marshal(orderReq)
@@ -445,33 +456,40 @@ func (c *OKXClient) PlaceMarketOrder(ctx context.Context, symbol string, side st
 
 	respBody, err := c.doRequest("POST", "/api/v5/trade/order", string(bodyBytes))
 	if err != nil {
+		log.Printf("[%s] ORDER FAILED: %s %s qty=%.8f err=%v", c.name, side, symbol, quantity, err)
 		return nil, fmt.Errorf("place order: %w", err)
 	}
 
 	var resp okxOrderResponse
 	if err := json.Unmarshal(respBody, &resp); err != nil {
+		log.Printf("[%s] ORDER PARSE ERROR: %s %s body=%s", c.name, side, symbol, string(respBody))
 		return nil, fmt.Errorf("parse order response: %w", err)
 	}
 
 	if len(resp.Data) == 0 {
+		log.Printf("[%s] ORDER EMPTY RESPONSE: %s %s", c.name, side, symbol)
 		return nil, fmt.Errorf("empty order response")
 	}
 
 	orderData := resp.Data[0]
 	if orderData.SCode != "0" {
+		log.Printf("[%s] ORDER REJECTED: %s %s code=%s msg=%s", c.name, side, symbol, orderData.SCode, orderData.SMsg)
 		return nil, fmt.Errorf("order failed: %s", orderData.SMsg)
 	}
 
 	order := &model.Order{
-		Exchange:  c.name,
-		Symbol:    symbol,
-		Side:      strings.ToUpper(side),
-		Quantity:  quantity,
-		Price:     0, // OKX market order response doesn't include fill price
-		OrderID:   orderData.OrdID,
-		Timestamp: time.Now(),
+		Exchange:      c.name,
+		Symbol:        symbol,
+		Side:          strings.ToUpper(side),
+		Quantity:      quantity,
+		Price:         0,
+		OrderID:       orderData.OrdID,
+		ClientOrderID: clientOrderID,
+		Status:        "NEW",
+		Timestamp:     time.Now(),
 	}
 
+	log.Printf("[%s] ORDER FILLED: %s %s qty=%.8f orderId=%s clientOrderId=%s", c.name, order.Side, order.Symbol, order.Quantity, order.OrderID, order.ClientOrderID)
 	return order, nil
 }
 
@@ -505,8 +523,8 @@ func (c *OKXClient) GetPosition(ctx context.Context, symbol string) (*model.Posi
 		return nil, fmt.Errorf("parse position response: %w", err)
 	}
 
-	// If no positions, return empty position
 	if len(resp.Data) == 0 {
+		log.Printf("[%s] POSITION: %s side=NONE size=0", c.name, symbol)
 		return &model.Position{
 			Exchange: c.name,
 			Symbol:   symbol,
@@ -515,7 +533,6 @@ func (c *OKXClient) GetPosition(ctx context.Context, symbol string) (*model.Posi
 		}, nil
 	}
 
-	// Process first matching position
 	for _, p := range resp.Data {
 		pos, _ := strconv.ParseFloat(p.Pos, 64)
 		avgPx, _ := strconv.ParseFloat(p.AvgPx, 64)
@@ -530,13 +547,11 @@ func (c *OKXClient) GetPosition(ctx context.Context, symbol string) (*model.Posi
 			size = -pos
 		}
 
-		// Also check posSide field
 		if p.PosSide == "long" && size == 0 {
-			// Empty long position
 		} else if p.PosSide == "short" && size == 0 {
-			// Empty short position
 		}
 
+		log.Printf("[%s] POSITION: %s side=%s size=%.8f entry=%.8f pnl=%.8f", c.name, symbol, side, size, avgPx, upl)
 		return &model.Position{
 			Exchange:      c.name,
 			Symbol:        symbol,
@@ -574,43 +589,118 @@ type okxTradeResponse struct {
 }
 
 // GetTrades retrieves recent trades for a symbol
-func (c *OKXClient) GetTrades(ctx context.Context, symbol string) ([]model.Trade, error) {
+func (c *OKXClient) GetOrders(ctx context.Context, symbol string) ([]model.Order, error) {
 	instID := symbolToInstID(symbol)
-	endpoint := fmt.Sprintf("/api/v5/trade/fills?instType=SWAP&instId=%s", instID)
+	endpoint := fmt.Sprintf("/api/v5/trade/orders-history?instType=SWAP&instId=%s&limit=50", instID)
 
 	respBody, err := c.doRequest("GET", endpoint, "")
 	if err != nil {
-		return nil, fmt.Errorf("get trades: %w", err)
+		return nil, fmt.Errorf("get orders: %w", err)
 	}
 
-	var resp okxTradeResponse
+	var resp struct {
+		Data []struct {
+			InstID  string `json:"instId"`
+			OrdID   string `json:"ordId"`
+			ClOrdID string `json:"clOrdId"`
+			Side    string `json:"side"`
+			Sz      string `json:"sz"`
+			AvgPx   string `json:"avgPx"`
+			State   string `json:"state"`
+			UTime   string `json:"uTime"`
+		} `json:"data"`
+	}
 	if err := json.Unmarshal(respBody, &resp); err != nil {
-		return nil, fmt.Errorf("parse trades response: %w", err)
+		return nil, fmt.Errorf("parse orders response: %w", err)
 	}
 
-	trades := make([]model.Trade, 0, len(resp.Data))
-	for _, t := range resp.Data {
-		sz, _ := strconv.ParseFloat(t.Sz, 64)
-		fillPx, _ := strconv.ParseFloat(t.FillPx, 64)
-		fee, _ := strconv.ParseFloat(t.Fee, 64)
-		ts, _ := strconv.ParseInt(t.Ts, 10, 64)
+	orders := make([]model.Order, 0, len(resp.Data))
+	for _, o := range resp.Data {
+		sz, _ := strconv.ParseFloat(o.Sz, 64)
+		avgPx, _ := strconv.ParseFloat(o.AvgPx, 64)
+		ts, _ := strconv.ParseInt(o.UTime, 10, 64)
 
-		trades = append(trades, model.Trade{
-			Exchange:  c.name,
-			Symbol:    symbol,
-			Side:      strings.ToUpper(t.Side),
-			Quantity:  sz,
-			Price:     fillPx,
-			Fee:       fee,
-			Timestamp: time.UnixMilli(ts),
-			OrderID:   t.OrdID,
+		orders = append(orders, model.Order{
+			Exchange:      c.name,
+			Symbol:        symbol,
+			Side:          strings.ToUpper(o.Side),
+			Quantity:      sz,
+			Price:         avgPx,
+			OrderID:       o.OrdID,
+			ClientOrderID: o.ClOrdID,
+			Status:        o.State,
+			Timestamp:     time.UnixMilli(ts),
 		})
 	}
 
-	return trades, nil
+	sort.Slice(orders, func(i, j int) bool {
+		return orders[i].Timestamp.After(orders[j].Timestamp)
+	})
+
+	return orders, nil
 }
 
 // Close cleans up resources
+// GetFundingRate retrieves the current funding rate (public endpoint)
+func (c *OKXClient) GetFundingRate(ctx context.Context, symbol string) (*model.FundingRate, error) {
+	instID := symbolToInstID(symbol)
+	reqURL := c.baseURL + "/api/v5/public/funding-rate?instId=" + instID
+	req, err := http.NewRequestWithContext(ctx, "GET", reqURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("http request: %w", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read response: %w", err)
+	}
+
+	var result struct {
+		Data []struct {
+			FundingRate     string `json:"fundingRate"`
+			FundingTime     string `json:"fundingTime"`
+			NextFundingTime string `json:"nextFundingTime"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil || len(result.Data) == 0 {
+		return nil, fmt.Errorf("parse funding rate response: %w", err)
+	}
+
+	d := result.Data[0]
+	rate, _ := strconv.ParseFloat(d.FundingRate, 64)
+	nextTime, _ := strconv.ParseInt(d.NextFundingTime, 10, 64)
+
+	// OKX funding-rate endpoint doesn't return mark/index, fetch separately via mark-price
+	markReqURL := c.baseURL + "/api/v5/public/mark-price?instType=SWAP&instId=" + instID
+	markReq, _ := http.NewRequestWithContext(ctx, "GET", markReqURL, nil)
+	var markPrice, indexPrice float64
+	if markResp, err := c.httpClient.Do(markReq); err == nil {
+		defer markResp.Body.Close()
+		markBody, _ := io.ReadAll(markResp.Body)
+		var markResult struct {
+			Data []struct {
+				MarkPx string `json:"markPx"`
+			} `json:"data"`
+		}
+		if json.Unmarshal(markBody, &markResult) == nil && len(markResult.Data) > 0 {
+			markPrice, _ = strconv.ParseFloat(markResult.Data[0].MarkPx, 64)
+		}
+	}
+
+	return &model.FundingRate{
+		Exchange:        c.name,
+		Symbol:          symbol,
+		Rate:            rate,
+		NextFundingTime: nextTime,
+		MarkPrice:       markPrice,
+		IndexPrice:      indexPrice,
+	}, nil
+}
+
 func (c *OKXClient) Close() error {
 	return nil
 }

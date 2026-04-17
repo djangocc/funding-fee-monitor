@@ -28,11 +28,23 @@
       display: flex; flex-direction: column; height: calc(100vh - 44px);
     }
     .chart-section { display: flex; flex-direction: column; border-bottom: 1px solid #333; }
-    .chart-section.main { flex: 3; }
+    .chart-section.price { flex: 3; }
+    .chart-section.sub { flex: 1; }
     .chart-section.spread { flex: 1; }
     .chart-title { font-size: 11px; padding: 4px 12px; background: #16213e; color: #888; }
     .chart-wrapper { flex: 1; position: relative; }
-    canvas.overlay { position: absolute; top: 0; left: 0; pointer-events: none; }
+    .chart-wrapper canvas { display: block; }
+    .chart-wrapper canvas.crosshair-overlay {
+      position: absolute; top: 0; left: 0; pointer-events: none;
+    }
+
+    /* Tooltip overlay */
+    .chart-tooltip {
+      position: absolute; top: 4px; left: 60px;
+      font-size: 10px; color: #aaa; pointer-events: none;
+      white-space: nowrap; z-index: 2;
+    }
+    .chart-tooltip span { margin-right: 12px; }
   </style>
 </head>
 <body>
@@ -63,9 +75,19 @@
   </div>
 
   <div class="charts-container">
-    <div class="chart-section main">
+    <div class="chart-section price">
       <div class="chart-title" id="price-title">Price: RAVEUSDT @ aster [1m]</div>
-      <div class="chart-wrapper" id="price-chart"></div>
+      <div class="chart-wrapper" id="price-chart-wrapper">
+        <canvas id="price-canvas"></canvas>
+        <div class="chart-tooltip" id="price-tooltip"></div>
+      </div>
+    </div>
+    <div class="chart-section sub">
+      <div class="chart-title">Premium% / FundingRate%</div>
+      <div class="chart-wrapper" id="sub-chart-wrapper">
+        <canvas id="sub-canvas"></canvas>
+        <div class="chart-tooltip" id="sub-tooltip"></div>
+      </div>
     </div>
     <div class="chart-section spread">
       <div class="chart-title" id="spread-title">Spread: binance - aster [1m]</div>
@@ -78,31 +100,400 @@
     let currentExchange = 'aster';
     let currentSpreadTarget = 'binance';
     let currentPeriod = '1m';
-    let priceChart = null;
     let spreadChart = null;
-    let priceData = [];  // cached for overlay drawing
+    let priceData = [];
 
-    function registerIndicators() {
-      klinecharts.registerIndicator({
-        name: 'PREMIUM',
-        shortName: 'Premium%',
-        figures: [
-          { key: 'premium', title: 'Premium: ', type: 'line',
-            styles: () => ({ color: '#ff6b6b' }) },
-        ],
-        calc: (dataList) => dataList.map(d => ({ premium: d.premium ?? null })),
+    // ========== Generic line chart drawing utilities ==========
+
+    function getCanvasCtx(canvasId, wrapperId) {
+      var canvas = document.getElementById(canvasId);
+      var wrapper = document.getElementById(wrapperId);
+      var dpr = window.devicePixelRatio || 1;
+      var w = wrapper.clientWidth;
+      var h = wrapper.clientHeight;
+      canvas.width = w * dpr;
+      canvas.height = h * dpr;
+      canvas.style.width = w + 'px';
+      canvas.style.height = h + 'px';
+      var ctx = canvas.getContext('2d');
+      ctx.scale(dpr, dpr);
+      return { ctx, w, h, dpr };
+    }
+
+    // Compute nice Y-axis tick values
+    function niceScale(min, max, maxTicks) {
+      if (min === max) { min -= 1; max += 1; }
+      var range = max - min;
+      var roughStep = range / (maxTicks || 5);
+      var mag = Math.pow(10, Math.floor(Math.log10(roughStep)));
+      var norm = roughStep / mag;
+      var step;
+      if (norm <= 1.5) step = 1 * mag;
+      else if (norm <= 3) step = 2 * mag;
+      else if (norm <= 7) step = 5 * mag;
+      else step = 10 * mag;
+      var niceMin = Math.floor(min / step) * step;
+      var niceMax = Math.ceil(max / step) * step;
+      var ticks = [];
+      for (var v = niceMin; v <= niceMax + step * 0.5; v += step) ticks.push(v);
+      return { min: niceMin, max: niceMax, ticks: ticks, step: step };
+    }
+
+    // Format price for Y axis labels
+    function formatNum(v, decimals) {
+      if (decimals == null) {
+        if (Math.abs(v) < 0.01) decimals = 6;
+        else if (Math.abs(v) < 1) decimals = 4;
+        else if (Math.abs(v) < 100) decimals = 2;
+        else decimals = 2;
+      }
+      return v.toFixed(decimals);
+    }
+
+    // Format timestamp for X axis
+    function formatTime(ts) {
+      var d = new Date(ts);
+      var hh = String(d.getHours()).padStart(2, '0');
+      var mm = String(d.getMinutes()).padStart(2, '0');
+      var ss = String(d.getSeconds()).padStart(2, '0');
+      return hh + ':' + mm + ':' + ss;
+    }
+
+    /**
+     * Draw a multi-line chart on a canvas.
+     * Supports dual Y-axis: series with yAxis:'right' use an independent right axis.
+     * @param {string} canvasId
+     * @param {string} wrapperId
+     * @param {Array} data - array of objects with timestamp and value fields
+     * @param {Array} series - [{key, color, dash?, label, width?, yAxis?:'left'|'right'}]
+     * @param {object} opts - {yDecimals, ySuffix, zeroLine}
+     * @returns {object} layout info for mousemove tooltip
+     */
+    function drawLineChart(canvasId, wrapperId, data, series, opts) {
+      opts = opts || {};
+      var { ctx, w, h } = getCanvasCtx(canvasId, wrapperId);
+      var hasRight = series.some(function(sr) { return sr.yAxis === 'right'; });
+      var pad = { top: 20, bottom: 24, left: 64, right: hasRight ? 64 : 64 };
+      var chartW = w - pad.left - pad.right;
+      var chartH = h - pad.top - pad.bottom;
+
+      // Background
+      ctx.fillStyle = '#1a1a2e';
+      ctx.fillRect(0, 0, w, h);
+
+      if (!data || data.length === 0) {
+        ctx.fillStyle = '#666';
+        ctx.font = '12px Menlo';
+        ctx.fillText('No data', w / 2 - 20, h / 2);
+        return null;
+      }
+
+      // Compute Y range per axis
+      function computeRange(filterFn) {
+        var minY = Infinity, maxY = -Infinity;
+        for (var i = 0; i < data.length; i++) {
+          for (var s = 0; s < series.length; s++) {
+            if (!filterFn(series[s])) continue;
+            var v = data[i][series[s].key];
+            if (v != null) {
+              if (v < minY) minY = v;
+              if (v > maxY) maxY = v;
+            }
+          }
+        }
+        if (minY === Infinity) return null;
+        var yPad = (maxY - minY) * 0.05 || 0.5;
+        return niceScale(minY - yPad, maxY + yPad, 5);
+      }
+
+      var leftScale = computeRange(function(sr) { return sr.yAxis !== 'right'; });
+      var rightScale = hasRight ? computeRange(function(sr) { return sr.yAxis === 'right'; }) : null;
+      var primaryScale = leftScale || rightScale;
+      if (!primaryScale) return null;
+
+      function toX(idx) { return pad.left + (idx / (data.length - 1 || 1)) * chartW; }
+      function toYLeft(val) { return pad.top + (1 - (val - leftScale.min) / (leftScale.max - leftScale.min)) * chartH; }
+      function toYRight(val) { return pad.top + (1 - (val - rightScale.min) / (rightScale.max - rightScale.min)) * chartH; }
+      function toY(val, sr) { return (sr && sr.yAxis === 'right' && rightScale) ? toYRight(val) : toYLeft(val); }
+
+      // Grid lines from left axis
+      ctx.strokeStyle = '#222';
+      ctx.lineWidth = 1;
+      ctx.font = '10px Menlo';
+      if (leftScale) {
+        // Left Y axis labels
+        var leftColor = series.find(function(sr) { return sr.yAxis !== 'right'; });
+        ctx.fillStyle = leftColor ? leftColor.color : '#666';
+        ctx.textAlign = 'right';
+        for (var t = 0; t < leftScale.ticks.length; t++) {
+          var y = toYLeft(leftScale.ticks[t]);
+          if (y < pad.top - 5 || y > h - pad.bottom + 5) continue;
+          // grid line
+          ctx.strokeStyle = '#222';
+          ctx.beginPath();
+          ctx.moveTo(pad.left, y);
+          ctx.lineTo(w - pad.right, y);
+          ctx.stroke();
+          ctx.fillText(formatNum(leftScale.ticks[t], opts.yDecimals) + (opts.ySuffix || ''), pad.left - 4, y + 3);
+        }
+      }
+
+      // Right Y axis labels
+      if (rightScale) {
+        var rightColor = series.find(function(sr) { return sr.yAxis === 'right'; });
+        ctx.fillStyle = rightColor ? rightColor.color : '#666';
+        ctx.textAlign = 'left';
+        for (var t = 0; t < rightScale.ticks.length; t++) {
+          var y = toYRight(rightScale.ticks[t]);
+          if (y < pad.top - 5 || y > h - pad.bottom + 5) continue;
+          ctx.fillText(formatNum(rightScale.ticks[t], opts.yDecimals) + (opts.ySuffix || ''), w - pad.right + 4, y + 3);
+        }
+      }
+
+      // Zero line
+      if (opts.zeroLine) {
+        ctx.strokeStyle = '#555';
+        ctx.lineWidth = 1;
+        ctx.setLineDash([3, 3]);
+        if (leftScale && leftScale.min < 0 && leftScale.max > 0) {
+          ctx.beginPath();
+          ctx.moveTo(pad.left, toYLeft(0));
+          ctx.lineTo(w - pad.right, toYLeft(0));
+          ctx.stroke();
+        }
+        ctx.setLineDash([]);
+      }
+
+      // X axis labels (show ~6 labels)
+      var xLabelStep = Math.max(1, Math.floor(data.length / 6));
+      ctx.fillStyle = '#666';
+      ctx.textAlign = 'center';
+      for (var i = 0; i < data.length; i += xLabelStep) {
+        var x = toX(i);
+        ctx.fillText(formatTime(data[i].timestamp), x, h - 4);
+        ctx.strokeStyle = '#222';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(x, pad.top);
+        ctx.lineTo(x, h - pad.bottom);
+        ctx.stroke();
+      }
+
+      // Draw series lines
+      for (var s = 0; s < series.length; s++) {
+        var sr = series[s];
+        var usedScale = (sr.yAxis === 'right' && rightScale) ? rightScale : leftScale;
+        var mapY = (sr.yAxis === 'right' && rightScale) ? toYRight : toYLeft;
+        ctx.strokeStyle = sr.color;
+        ctx.lineWidth = sr.width || 1.5;
+        ctx.setLineDash(sr.dash || []);
+        ctx.beginPath();
+        var started = false;
+        for (var i = 0; i < data.length; i++) {
+          var v = data[i][sr.key];
+          if (v == null) { started = false; continue; }
+          var x = toX(i);
+          var y = mapY(v);
+          if (!started) { ctx.moveTo(x, y); started = true; }
+          else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+
+      // Legend (top-left)
+      ctx.font = '10px Menlo';
+      var lx = pad.left + 4;
+      for (var s = 0; s < series.length; s++) {
+        var sr = series[s];
+        ctx.fillStyle = sr.color;
+        var dashStr = sr.dash ? '-- ' : '— ';
+        var label = dashStr + sr.label;
+        ctx.fillText(label, lx, 12);
+        lx += ctx.measureText(label).width + 16;
+      }
+
+      // Return layout info for tooltip/crosshair
+      return { data: data, series: series, toX: toX, toY: toY, pad: pad, chartW: chartW, chartH: chartH, w: w, h: h, opts: opts, scale: leftScale, rightScale: rightScale };
+    }
+
+    // ========== Crosshair / Tooltip ==========
+
+    function getOrCreateOverlay(wrapperId) {
+      var wrapper = document.getElementById(wrapperId);
+      var id = wrapperId + '-crosshair';
+      var overlay = document.getElementById(id);
+      if (!overlay) {
+        overlay = document.createElement('canvas');
+        overlay.id = id;
+        overlay.className = 'crosshair-overlay';
+        wrapper.appendChild(overlay);
+      }
+      return overlay;
+    }
+
+    function drawCrosshair(wrapperId, layoutRef, mx, my) {
+      var layout = layoutRef.current;
+      var overlay = getOrCreateOverlay(wrapperId);
+      var wrapper = document.getElementById(wrapperId);
+      var dpr = window.devicePixelRatio || 1;
+      var w = wrapper.clientWidth;
+      var h = wrapper.clientHeight;
+      overlay.width = w * dpr;
+      overlay.height = h * dpr;
+      overlay.style.width = w + 'px';
+      overlay.style.height = h + 'px';
+      var ctx = overlay.getContext('2d');
+      ctx.scale(dpr, dpr);
+
+      if (!layout || !layout.data.length) return -1;
+
+      var pad = layout.pad;
+
+      // Clamp mouse to chart area
+      if (mx < pad.left || mx > w - pad.right || my < pad.top || my > h - pad.bottom) {
+        return -1;
+      }
+
+      // Find nearest data index
+      var idx = Math.round((mx - pad.left) / layout.chartW * (layout.data.length - 1));
+      idx = Math.max(0, Math.min(layout.data.length - 1, idx));
+      var snapX = layout.toX(idx);
+
+      // Draw vertical line (snapped to data point)
+      ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([3, 3]);
+      ctx.beginPath();
+      ctx.moveTo(snapX, pad.top);
+      ctx.lineTo(snapX, h - pad.bottom);
+      ctx.stroke();
+
+      // Draw horizontal line (follows mouse)
+      ctx.beginPath();
+      ctx.moveTo(pad.left, my);
+      ctx.lineTo(w - pad.right, my);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      // Y value labels
+      ctx.font = '10px Menlo';
+      // Left Y axis label
+      if (layout.scale) {
+        var valL = layout.scale.max - (my - pad.top) / layout.chartH * (layout.scale.max - layout.scale.min);
+        var labelL = formatNum(valL, layout.opts.yDecimals) + (layout.opts.ySuffix || '');
+        var twL = ctx.measureText(labelL).width;
+        ctx.fillStyle = '#333';
+        ctx.fillRect(pad.left - twL - 8, my - 8, twL + 8, 16);
+        ctx.fillStyle = '#e0e0e0';
+        ctx.textAlign = 'right';
+        ctx.fillText(labelL, pad.left - 4, my + 3);
+      }
+      // Right Y axis label
+      if (layout.rightScale) {
+        var valR = layout.rightScale.max - (my - pad.top) / layout.chartH * (layout.rightScale.max - layout.rightScale.min);
+        var labelR = formatNum(valR, layout.opts.yDecimals) + (layout.opts.ySuffix || '');
+        ctx.fillStyle = '#333';
+        ctx.fillRect(w - pad.right, my - 8, pad.right, 16);
+        ctx.fillStyle = '#e0e0e0';
+        ctx.textAlign = 'left';
+        ctx.fillText(labelR, w - pad.right + 4, my + 3);
+      } else if (layout.scale) {
+        var valS = layout.scale.max - (my - pad.top) / layout.chartH * (layout.scale.max - layout.scale.min);
+        var labelS = formatNum(valS, layout.opts.yDecimals) + (layout.opts.ySuffix || '');
+        ctx.fillStyle = '#333';
+        ctx.fillRect(w - pad.right, my - 8, pad.right, 16);
+        ctx.fillStyle = '#e0e0e0';
+        ctx.textAlign = 'left';
+        ctx.fillText(labelS, w - pad.right + 4, my + 3);
+      }
+
+      // X time label at bottom
+      var d = layout.data[idx];
+      var timeLabel = formatTime(d.timestamp);
+      var tw = ctx.measureText(timeLabel).width;
+      ctx.fillStyle = '#333';
+      ctx.fillRect(snapX - tw / 2 - 4, h - pad.bottom, tw + 8, pad.bottom);
+      ctx.fillStyle = '#e0e0e0';
+      ctx.textAlign = 'center';
+      ctx.fillText(timeLabel, snapX, h - pad.bottom + 14);
+
+      return idx;
+    }
+
+    function clearCrosshair(wrapperId) {
+      var overlay = getOrCreateOverlay(wrapperId);
+      var ctx = overlay.getContext('2d');
+      ctx.clearRect(0, 0, overlay.width, overlay.height);
+    }
+
+    function setupCrosshair(canvasId, wrapperId, tooltipId, layoutRef) {
+      var canvas = document.getElementById(canvasId);
+      var tooltip = document.getElementById(tooltipId);
+
+      canvas.style.cursor = 'crosshair';
+
+      canvas.addEventListener('mousemove', function(e) {
+        var layout = layoutRef.current;
+        if (!layout || !layout.data.length) {
+          tooltip.innerHTML = '';
+          clearCrosshair(wrapperId);
+          return;
+        }
+        var rect = canvas.getBoundingClientRect();
+        var mx = e.clientX - rect.left;
+        var my = e.clientY - rect.top;
+
+        var idx = drawCrosshair(wrapperId, layoutRef, mx, my);
+        if (idx < 0) {
+          tooltip.innerHTML = '';
+          clearCrosshair(wrapperId);
+          return;
+        }
+
+        var d = layout.data[idx];
+        var html = '<span style="color:#888">' + formatTime(d.timestamp) + '</span>';
+        for (var s = 0; s < layout.series.length; s++) {
+          var sr = layout.series[s];
+          var v = d[sr.key];
+          var vStr = v != null ? formatNum(v, layout.opts.yDecimals) + (layout.opts.ySuffix || '') : '—';
+          html += '<span style="color:' + sr.color + '">' + sr.label + ': ' + vStr + '</span>';
+        }
+        tooltip.innerHTML = html;
       });
 
-      klinecharts.registerIndicator({
-        name: 'FUNDING',
-        shortName: 'FundingRate%',
-        figures: [
-          { key: 'funding_rate', title: 'Rate: ', type: 'line',
-            styles: () => ({ color: '#cc66ff' }) },
-        ],
-        calc: (dataList) => dataList.map(d => ({ funding_rate: d.funding_rate ?? null })),
+      canvas.addEventListener('mouseleave', function() {
+        tooltip.innerHTML = '';
+        clearCrosshair(wrapperId);
       });
     }
+
+    // ========== Chart instances ==========
+
+    var priceLayout = { current: null };
+    var subLayout = { current: null };
+
+    function drawPriceChart() {
+      priceLayout.current = drawLineChart('price-canvas', 'price-chart-wrapper', priceData, [
+        { key: 'close', color: '#4ec9b0', label: 'Contract', width: 2 },
+        { key: 'index_price', color: '#ffff00', label: 'Index', width: 1.5 },
+        { key: 'mark_price', color: '#ff66b2', label: 'Mark', width: 1.5, dash: [4, 4] },
+      ]);
+    }
+
+    function drawSubChart() {
+      subLayout.current = drawLineChart('sub-canvas', 'sub-chart-wrapper', priceData, [
+        { key: 'premium', color: '#ff6b6b', label: 'Premium%', width: 1.5 },
+        { key: 'funding_rate', color: '#cc66ff', label: 'FundingRate%', width: 1.5, yAxis: 'right' },
+      ], { ySuffix: '%', yDecimals: 4, zeroLine: true });
+    }
+
+    function drawAllCustomCharts() {
+      drawPriceChart();
+      drawSubChart();
+    }
+
+    // ========== KLineChart for Spread (kept) ==========
 
     const darkStyles = {
       grid: { show: true, horizontal: { color: '#222' }, vertical: { color: '#222' } },
@@ -111,41 +502,7 @@
       yAxis: { tickText: { color: '#666' } },
     };
 
-    function initCharts() {
-      priceChart = klinecharts.init('price-chart', {
-        styles: {
-          ...darkStyles,
-          candle: {
-            type: 'area',
-            area: {
-              lineSize: 2,
-              lineColor: '#4ec9b0',
-              value: 'close',
-              smooth: false,
-              backgroundColor: ['rgba(78,201,176,0.1)', 'transparent'],
-              point: { show: false },
-            },
-            priceMark: { last: { show: true } },
-            tooltip: {
-              custom: [
-                { title: 'Contract ', value: '{close}' },
-                { title: 'Mark ', value: '{mark_price}' },
-                { title: 'Index ', value: '{index_price}' },
-                { title: 'Premium ', value: '{premium}%' },
-                { title: 'Rate ', value: '{funding_rate}%' },
-              ],
-            },
-          },
-        },
-      });
-
-      priceChart.createIndicator('PREMIUM', false, { id: 'premium_pane', height: 80 });
-      priceChart.createIndicator('FUNDING', false, { id: 'funding_pane', height: 60 });
-
-      // Subscribe to chart viewport changes to redraw overlay
-      priceChart.subscribeAction('onVisibleRangeChange', drawIndexOverlay);
-      priceChart.subscribeAction('onCrosshairChange', drawIndexOverlay);
-
+    function initSpreadChart() {
       spreadChart = klinecharts.init('spread-chart', {
         styles: {
           ...darkStyles,
@@ -170,119 +527,8 @@
       spreadChart.createIndicator('MA', false, { id: 'candle_pane' });
     }
 
-    // --- Canvas overlay for Index Price line ---
-    function drawIndexOverlay() {
-      if (!priceData.length) return;
+    // ========== Data loading ==========
 
-      var chartEl = document.getElementById('price-chart');
-      var canvases = chartEl.querySelectorAll('canvas');
-      if (!canvases.length) return;
-
-      // Find or create overlay canvas
-      var overlayId = 'index-overlay';
-      var overlay = document.getElementById(overlayId);
-      // Get the main canvas (first one is usually the candle pane)
-      var mainCanvas = canvases[0];
-
-      if (!overlay) {
-        overlay = document.createElement('canvas');
-        overlay.id = overlayId;
-        overlay.className = 'overlay';
-        mainCanvas.parentElement.appendChild(overlay);
-      }
-
-      overlay.width = mainCanvas.width;
-      overlay.height = mainCanvas.height;
-      overlay.style.width = mainCanvas.style.width;
-      overlay.style.height = mainCanvas.style.height;
-
-      var ctx = overlay.getContext('2d');
-      ctx.clearRect(0, 0, overlay.width, overlay.height);
-
-      // Get chart conversion functions
-      var dataList = priceChart.getDataList();
-      if (!dataList.length) return;
-
-      var visibleRange = priceChart.getVisibleRange();
-      var from = visibleRange.from;
-      var to = Math.min(visibleRange.to, dataList.length);
-
-      // Find Y axis range from visible data
-      var minY = Infinity, maxY = -Infinity;
-      for (var i = from; i < to; i++) {
-        var d = dataList[i];
-        if (d.high > maxY) maxY = d.high;
-        if (d.low < minY) minY = d.low;
-        if (d.index_price != null) {
-          if (d.index_price > maxY) maxY = d.index_price;
-          if (d.index_price < minY) minY = d.index_price;
-        }
-      }
-
-      // Get pixel bounds of candle pane (approximate)
-      var dpr = window.devicePixelRatio || 1;
-      var paneHeight = overlay.height * 0.65;  // candle pane is roughly top 65%
-      var leftPad = 0;
-      var rightPad = 80 * dpr;  // Y axis label width
-      var topPad = 30 * dpr;
-      var chartWidth = overlay.width - leftPad - rightPad;
-
-      var yRange = maxY - minY;
-      if (yRange === 0) return;
-
-      function toX(idx) {
-        var barWidth = chartWidth / (to - from);
-        return leftPad + (idx - from) * barWidth + barWidth / 2;
-      }
-      function toY(val) {
-        return topPad + (1 - (val - minY) / yRange) * (paneHeight - topPad * 2);
-      }
-
-      // Draw Index Price line (yellow)
-      ctx.strokeStyle = '#ffff00';
-      ctx.lineWidth = 2 * dpr;
-      ctx.setLineDash([]);
-      ctx.beginPath();
-      var started = false;
-      for (var i = from; i < to; i++) {
-        var d = dataList[i];
-        if (d.index_price == null) continue;
-        var x = toX(i);
-        var y = toY(d.index_price);
-        if (!started) { ctx.moveTo(x, y); started = true; }
-        else ctx.lineTo(x, y);
-      }
-      ctx.stroke();
-
-      // Draw Mark Price line (pink dashed)
-      ctx.strokeStyle = '#ff66b2';
-      ctx.lineWidth = 1.5 * dpr;
-      ctx.setLineDash([4 * dpr, 4 * dpr]);
-      ctx.beginPath();
-      started = false;
-      for (var i = from; i < to; i++) {
-        var d = dataList[i];
-        if (d.mark_price == null) continue;
-        var x = toX(i);
-        var y = toY(d.mark_price);
-        if (!started) { ctx.moveTo(x, y); started = true; }
-        else ctx.lineTo(x, y);
-      }
-      ctx.stroke();
-
-      // Legend
-      ctx.setLineDash([]);
-      ctx.font = (10 * dpr) + 'px Menlo';
-      var legendY = 14 * dpr;
-      ctx.fillStyle = '#4ec9b0';
-      ctx.fillText('— Contract', 10 * dpr, legendY);
-      ctx.fillStyle = '#ffff00';
-      ctx.fillText('— Index', 120 * dpr, legendY);
-      ctx.fillStyle = '#ff66b2';
-      ctx.fillText('-- Mark', 210 * dpr, legendY);
-    }
-
-    // --- Data loading ---
     async function loadPriceData() {
       document.getElementById('price-title').textContent =
         `Price: RAVEUSDT @ ${currentExchange} [${currentPeriod}]`;
@@ -290,8 +536,7 @@
         const resp = await fetch(`/api/kline?exchange=${currentExchange}&symbol=RAVEUSDT&period=${currentPeriod}`);
         const json = await resp.json();
         priceData = json.data;
-        priceChart.applyNewData(json.data);
-        setTimeout(drawIndexOverlay, 100);
+        drawAllCustomCharts();
       } catch (e) {
         console.error('Failed to load price data:', e);
       }
@@ -317,8 +562,8 @@
     // Auto-refresh every 5s
     setInterval(loadAllData, 5000);
 
-    // Redraw overlay on resize
-    window.addEventListener('resize', () => setTimeout(drawIndexOverlay, 200));
+    // Redraw on resize
+    window.addEventListener('resize', () => { drawAllCustomCharts(); });
 
     // Event handlers
     document.getElementById('exchange').addEventListener('change', (e) => {
@@ -340,8 +585,9 @@
     });
 
     // Init
-    registerIndicators();
-    initCharts();
+    initSpreadChart();
+    setupCrosshair('price-canvas', 'price-chart-wrapper', 'price-tooltip', priceLayout);
+    setupCrosshair('sub-canvas', 'sub-chart-wrapper', 'sub-tooltip', subLayout);
     loadAllData();
   </script>
 </body>
