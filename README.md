@@ -1,61 +1,63 @@
-# Curitiba — 加密货币资金费率监控与套利系统
+[中文版](README_CN.md)
 
-本项目包含多个独立程序，围绕永续合约资金费率和跨交易所价差进行数据采集、监控和自动化交易。
+# Curitiba — Crypto Funding Rate Monitor & Arbitrage System
 
-## 程序一览
+A suite of independent tools for collecting, monitoring, and trading on perpetual futures funding rates and cross-exchange price spreads.
 
-| 程序 | 语言 | 说明 |
-|------|------|------|
-| `data-collector/` | Python | 实时行情数据采集，写入 InfluxDB |
-| `web/` | Python (Flask) | 资金费率可视化 Web 仪表盘 |
-| `monitor.py` | Python (Tkinter) | 桌面端实时价差监控报警 |
-| `spread-arbitrage/` | Go + React | 跨交易所价差套利自动交易系统 |
+## Components
+
+| Component | Language | Description |
+|-----------|----------|-------------|
+| `data-collector/` | Python | Real-time market data collection to InfluxDB |
+| `web/` | Python (Flask) | Funding rate visualization dashboard |
+| `monitor.py` | Python (Tkinter) | Desktop real-time spread monitor with alerts |
+| `spread-arbitrage/` | Go + React | Cross-exchange spread arbitrage trading system |
 
 ---
 
-### data-collector — 行情数据采集
+### data-collector — Market Data Collection
 
-通过 WebSocket 实时采集多交易所行情数据并写入 InfluxDB。
+Collects real-time market data from multiple exchanges via WebSocket and writes to InfluxDB.
 
-- 采集内容：买一/卖一价格 (bookTicker)、指数价/标记价、盘口深度
-- 支持交易所：Binance、Aster、OKX
-- 100ms 聚合写入，自动重连
-- 每小时从交易所 API 同步杠杆倍数、资金费率上限等配置
+- Data: best bid/ask (bookTicker), index/mark prices, order book depth
+- Exchanges: Binance, Aster, OKX
+- 100ms aggregation, auto-reconnect
+- Hourly sync of leverage, funding rate caps, and other parameters from exchange APIs
 
 ```bash
 cd data-collector
 python collector.py
 ```
 
-配置文件：`data-collector/config.json`（InfluxDB 连接、交易对、交易所参数）
+Config: `data-collector/config.json` (InfluxDB connection, trading pairs, exchange parameters)
 
 ---
 
-### web — 资金费率可视化仪表盘
+### web — Funding Rate Dashboard
 
-Flask Web 服务，从 InfluxDB 读取历史数据，展示价格走势和资金费率图表。
+Flask web service that reads historical data from InfluxDB and displays price trends and funding rate charts.
 
-- 合约价格、指数价格、标记价格折线图
-- 溢价率 (Premium%) 与资金费率 (Funding Rate%) 双轴图
-- 跨交易所价差 K 线图
-- 支持 1s ~ 1h 多种时间粒度
+- Contract price, index price, mark price line charts
+- Premium% and Funding Rate% dual-axis chart
+- Cross-exchange spread candlestick chart
+- Multiple time granularities: 1s to 1h
 
 ```bash
 cd web
 python app.py
 ```
 
-访问 `http://localhost:5000`
+Visit `http://localhost:5000`
 
 ---
 
-### monitor.py — 桌面端价差监控
+### monitor.py — Desktop Spread Monitor
 
-Tkinter 桌面 GUI 程序，实时显示各交易所价格和资金费率，价差超阈值时声音报警。
+Tkinter desktop GUI that displays real-time prices and funding rates, with audio alerts when spread exceeds thresholds.
 
-- WebSocket 实时价格 + 15s 轮询资金费率
-- 可配置开仓/平仓报警阈值
-- 窗口置顶、可拖拽、按交易所/方向独立静音
+- WebSocket real-time prices + 15s funding rate polling
+- Configurable open/close alert thresholds
+- Always-on-top, draggable window, per-exchange/direction mute
 
 ```bash
 python monitor.py
@@ -63,35 +65,35 @@ python monitor.py
 
 ---
 
-### spread-arbitrage — 跨交易所价差套利
+### spread-arbitrage — Cross-Exchange Spread Arbitrage
 
-Go 后端 + React 前端的自动化套利交易系统。详细部署说明见 [spread-arbitrage/README.md](spread-arbitrage/README.md)。
+Automated trading system with Go backend + React frontend. See [spread-arbitrage/README.md](spread-arbitrage/README.md) for deployment details.
 
-- 监控同一合约在两个交易所的价差，满足条件自动开仓/平仓
-- 支持做空价差和做多价差两种策略
-- 连续确认机制防止瞬间波动误触发
-- 单边失败自动反向恢复，最多重试 3 次
-- Web UI：订单簿、资金费率、持仓、委托记录，配对订单悬浮显示价差
+- Monitors spread between the same contract on two exchanges, auto open/close when conditions are met
+- Supports both short-spread and long-spread strategies
+- Consecutive confirmation mechanism to prevent false triggers
+- Single-leg failure auto-reversal with up to 3 retries
+- Web UI: order books, funding rates, positions, order history with paired order spread tooltip
 
 ```bash
 cd spread-arbitrage
-cp .env.example .env   # 配置 API 密钥
+cp .env.example .env   # Configure API keys
 cd web && npm install && npm run build && cd ..
 go build -o spread-arbitrage .
 ./spread-arbitrage
 ```
 
-访问 `http://localhost:18527`
+Visit `http://localhost:18527`
 
 ---
 
-## 风险提示与安全建议
+## Disclaimer & Security Recommendations
 
-**免责声明：本项目仅供学习和研究目的，不构成任何投资建议。加密货币交易具有极高风险，包括但不限于市场波动、交易所故障、网络延迟、程序 Bug 等均可能导致资金损失。使用本系统进行实盘交易造成的任何损失，作者不承担任何责任。**
+**This project is for educational and research purposes only and does not constitute investment advice. Cryptocurrency trading carries extremely high risks, including but not limited to market volatility, exchange outages, network latency, and software bugs, all of which may result in financial loss. The author assumes no responsibility for any losses incurred from live trading with this system.**
 
-### 建议
+### Recommendations
 
-- **使用子账户 + 小资金试运行。** 所有交易所都支持创建子账户，先用少量资金验证策略逻辑和系统稳定性，确认无误后再逐步增加资金
-- **API 权限遵循最小原则。** 只开启必要的权限（合约交易），不要开启提币权限；务必绑定 IP 白名单，限制为运行本程序的服务器 IP
-- **不要在公网暴露 Web UI。** 本系统没有用户认证，如需远程访问请通过 SSH 隧道或 VPN
-- **妥善保管 `.env` 文件。** 包含交易所密钥和私钥，不要提交到 Git，不要分享给他人
+- **Use a sub-account with small funds for testing.** All exchanges support sub-accounts. Verify strategy logic and system stability with minimal capital before scaling up.
+- **Follow the principle of least privilege for API keys.** Only enable necessary permissions (futures trading). Never enable withdrawal permissions. Always bind IP whitelists, restricted to the server running this program.
+- **Do not expose the Web UI on public networks.** This system has no authentication. Use SSH tunnels or VPN for remote access.
+- **Keep your `.env` file safe.** It contains exchange keys and private keys. Never commit to Git or share with others.

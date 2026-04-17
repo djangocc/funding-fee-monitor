@@ -1,25 +1,27 @@
+[中文版](README_CN.md)
+
 # Spread Arbitrage
 
-跨交易所永续合约价差收敛套利系统。监控同一合约在不同交易所的价格差异，当价差满足条件时自动开仓/平仓。
+Cross-exchange perpetual futures spread convergence arbitrage system. Monitors price differences of the same contract across exchanges and automatically opens/closes positions when spread conditions are met.
 
-## 支持的交易所
+## Supported Exchanges
 
-- **Binance** — 普通账户 (fapi) 或统一账户/Portfolio Margin (papi)
-- **Aster** — v3 API，EIP-712 钱包签名
-- **OKX** — HMAC-SHA256 签名
+- **Binance** — Standard account (fapi) or Unified/Portfolio Margin account (papi)
+- **Aster** — v3 API with EIP-712 wallet signing
+- **OKX** — HMAC-SHA256 signing
 
-## 环境要求
+## Requirements
 
 - Go 1.22+
 - Node.js 18+
 
-## 配置 API 密钥
+## Configure API Keys
 
 ```bash
 cp .env.example .env
 ```
 
-编辑 `.env`（只需配置你要用的交易所，未配置的会正常启动但无法交易）：
+Edit `.env` (only configure the exchanges you need; unconfigured exchanges will start normally but cannot trade):
 
 ```env
 # Binance
@@ -37,66 +39,66 @@ OKX_API_KEY=
 OKX_API_SECRET=
 OKX_PASSPHRASE=
 
-# 服务端口
+# Server port
 PORT=18527
 ```
 
-### 如何获取各交易所 API Key
+### How to Obtain API Keys
 
 #### Binance
 
-1. 登录 https://www.binance.com → 账户 → API 管理
-2. 创建 API Key，勾选「Enable Futures」权限
-3. 建议绑定 IP 白名单
-4. `BINANCE_UNIFIED`：如果你的账户是统一账户 (Portfolio Margin)，设为 `true`；普通合约账户设为 `false`。在 Binance 网页端看到「Portfolio Margin」标识即为统一账户
+1. Log in to https://www.binance.com → Account → API Management
+2. Create an API Key, enable "Enable Futures" permission
+3. Recommended: bind IP whitelist
+4. `BINANCE_UNIFIED`: set to `true` if your account is a Unified/Portfolio Margin account; set to `false` for a standard futures account. You can identify this by the "Portfolio Margin" badge on the Binance web interface.
 
 #### Aster
 
-Aster v3 API 使用 EIP-712 钱包签名认证，不需要传统 API Key。需要在 Aster 平台创建 Agent（API 钱包）：
+Aster v3 API uses EIP-712 wallet signing instead of traditional API keys. You need to create an Agent (API wallet) on the Aster platform:
 
-1. 登录 https://app.asterdex.com，切换到 **Pro API** 模式
-2. 创建一个 **Agent**（API 钱包），平台会生成一个专用的 signer 地址
-3. 填写 `.env`：
-   - `ASTER_USER` — 你的主账户钱包地址（登录 Aster 的钱包）
-   - `ASTER_SIGNER` — 创建 Agent 后获得的 API 钱包地址
-   - `ASTER_PRIVATE_KEY` — Agent 钱包的私钥（不带 `0x` 前缀）
+1. Log in to https://app.asterdex.com, switch to **Pro API** mode
+2. Create an **Agent** (API wallet); the platform will generate a dedicated signer address
+3. Fill in `.env`:
+   - `ASTER_USER` — Your main account wallet address (the wallet you log in with)
+   - `ASTER_SIGNER` — The API wallet address obtained after creating the Agent
+   - `ASTER_PRIVATE_KEY` — The Agent wallet's private key (without `0x` prefix)
 
-API 文档：https://asterdex.github.io/aster-api-website/futures-v3/general-info/
+API docs: https://asterdex.github.io/aster-api-website/futures-v3/general-info/
 
 #### OKX
 
-1. 登录 https://www.okx.com → API 页面
-2. 创建 API Key，设置 Passphrase，勾选「Trade」权限
-3. 建议绑定 IP 白名单
-4. 填入 `OKX_API_KEY`、`OKX_API_SECRET`、`OKX_PASSPHRASE`
+1. Log in to https://www.okx.com → API page
+2. Create an API Key, set a Passphrase, enable "Trade" permission
+3. Recommended: bind IP whitelist
+4. Fill in `OKX_API_KEY`, `OKX_API_SECRET`, `OKX_PASSPHRASE`
 
-## 本地开发
+## Local Development
 
-本地开发时，Go 后端和 React 前端分别运行。前端 Vite 开发服务器自动将 `/api` 和 `/ws` 代理到后端。
+For local development, run the Go backend and React frontend separately. The Vite dev server automatically proxies `/api` and `/ws` requests to the backend.
 
-**终端 1 — Go 后端（端口 18527）：**
+**Terminal 1 — Go backend (port 18527):**
 
 ```bash
 go run .
 ```
 
-**终端 2 — 前端开发服务器（端口 18528）：**
+**Terminal 2 — Frontend dev server (port 18528):**
 
 ```bash
 cd web
-npm install   # 首次运行
+npm install   # first time only
 npm run dev
 ```
 
-浏览器打开 **http://localhost:18528** 进行开发，前端代码修改后自动热更新。
+Open **http://localhost:18528** in your browser. Frontend code changes will hot-reload automatically.
 
-> 注意：本地开发访问 18528（前端），不是 18527（后端）。18528 会自动代理 API 请求到 18527。
+> Note: For local development, open 18528 (frontend), not 18527 (backend). Port 18528 automatically proxies API requests to 18527.
 
-## 服务器部署
+## Server Deployment
 
-服务器上前端编译成静态文件，由 Go 服务直接托管，只需一个进程、一个端口。
+On the server, the frontend is compiled to static files and served directly by the Go binary — single process, single port.
 
-### 1. 构建前端
+### 1. Build Frontend
 
 ```bash
 cd web
@@ -105,16 +107,16 @@ npm run build
 cd ..
 ```
 
-### 2. 编译运行
+### 2. Build and Run
 
 ```bash
 go build -o spread-arbitrage .
 ./spread-arbitrage
 ```
 
-浏览器打开 **http://服务器IP:18527**。
+Open **http://your-server-ip:18527** in your browser.
 
-### 3. systemd 守护进程（推荐）
+### 3. systemd Service (Recommended)
 
 ```bash
 sudo tee /etc/systemd/system/spread-arbitrage.service > /dev/null <<'EOF'
@@ -137,31 +139,31 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now spread-arbitrage
 ```
 
-确保 `.env` 和 `web/dist/` 都在 `WorkingDirectory` 下。
+Ensure `.env` and `web/dist/` are both under the `WorkingDirectory`.
 
 ```bash
-sudo systemctl status spread-arbitrage    # 查看状态
-sudo journalctl -u spread-arbitrage -f    # 实时日志
-sudo systemctl restart spread-arbitrage   # 重启
+sudo systemctl status spread-arbitrage    # check status
+sudo journalctl -u spread-arbitrage -f    # live logs
+sudo systemctl restart spread-arbitrage   # restart
 ```
 
-## 使用流程
+## Usage
 
-1. 打开 Web UI，选择币对和两个交易所
-2. 在 Setup 页面点击「Test Trade」验证 API 连通性
-3. 进入交易视图，创建任务并设置价差阈值
-4. 启动自动交易，或使用手动开仓/平仓按钮
+1. Open the Web UI, select a trading pair and two exchanges
+2. On the Setup page, click "Test Trade" to verify API connectivity
+3. Enter the trading view, create a task and set spread thresholds
+4. Start auto trading, or use manual open/close buttons
 
-## 架构
+## Architecture
 
 ```
-main.go              入口，初始化所有组件
-config.go            加载 .env 配置
+main.go              Entry point, initializes all components
+config.go            Loads .env configuration
 internal/
-  model/types.go     共享数据类型
-  exchange/          交易所客户端（Binance/Aster/OKX）
-  engine/            交易引擎、价差评估、任务管理
-  wsmanager/         WebSocket 行情订阅管理
-  api/               REST API + WebSocket 推送
-web/                 React 前端（Vite + React）
+  model/types.go     Shared data types
+  exchange/          Exchange clients (Binance/Aster/OKX)
+  engine/            Trading engine, spread evaluator, task manager
+  wsmanager/         WebSocket market data subscription manager
+  api/               REST API + WebSocket push
+web/                 React frontend (Vite + React)
 ```
