@@ -108,7 +108,7 @@ func TestEngine_ShortSpread_OpensPosition(t *testing.T) {
 		eventMu.Unlock()
 	}
 
-	eng := NewEngine(tm, nil, clients, onEvent)
+	eng := NewEngine(tm, nil, clients, nil, onEvent)
 
 	task, err := tm.Create(model.TaskCreateRequest{
 		Symbol:           "BTCUSDT",
@@ -183,7 +183,7 @@ func TestEngine_ShortSpread_ClosesPosition(t *testing.T) {
 		"bybit":   clientB,
 	}
 
-	eng := NewEngine(tm, nil, clients, nil)
+	eng := NewEngine(tm, nil, clients, nil, nil)
 
 	task, err := tm.Create(model.TaskCreateRequest{
 		Symbol:           "BTCUSDT",
@@ -248,7 +248,7 @@ func TestEngine_RespectsMaxPosition(t *testing.T) {
 		"bybit":   clientB,
 	}
 
-	eng := NewEngine(tm, nil, clients, nil)
+	eng := NewEngine(tm, nil, clients, nil, nil)
 
 	task, err := tm.Create(model.TaskCreateRequest{
 		Symbol:           "BTCUSDT",
@@ -336,7 +336,7 @@ func TestEngine_StaleData_NoTrade(t *testing.T) {
 		"bybit":   clientB,
 	}
 
-	eng := NewEngine(tm, nil, clients, nil)
+	eng := NewEngine(tm, nil, clients, nil, nil)
 
 	task, err := tm.Create(model.TaskCreateRequest{
 		Symbol:           "BTCUSDT",
@@ -391,7 +391,7 @@ func TestEngine_SingleSideFail_StopsTask(t *testing.T) {
 		eventMu.Unlock()
 	}
 
-	eng := NewEngine(tm, nil, clients, onEvent)
+	eng := NewEngine(tm, nil, clients, nil, onEvent)
 
 	task, err := tm.Create(model.TaskCreateRequest{
 		Symbol:           "BTCUSDT",
@@ -465,7 +465,7 @@ func TestEngine_NoPositionNoClose(t *testing.T) {
 		"bybit":   clientB,
 	}
 
-	eng := NewEngine(tm, nil, clients, nil)
+	eng := NewEngine(tm, nil, clients, nil, nil)
 
 	task, err := tm.Create(model.TaskCreateRequest{
 		Symbol:           "BTCUSDT",

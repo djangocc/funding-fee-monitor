@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"spread-arbitrage/internal/api"
+	"spread-arbitrage/internal/clocksync"
 	"spread-arbitrage/internal/engine"
 	"spread-arbitrage/internal/exchange"
 	"spread-arbitrage/internal/model"
@@ -24,6 +25,10 @@ func main() {
 		"okx":     exchange.NewOKXClient(cfg.OKX.APIKey, cfg.OKX.APISecret, cfg.OKX.Passphrase),
 	}
 
+	// Start clock sync (NTP-style, every 30s)
+	clk := clocksync.New()
+	clk.Start(30 * time.Second)
+
 	// Create components
 	hub := api.NewHub()
 	taskMgr := engine.NewTaskManager()
@@ -33,16 +38,18 @@ func main() {
 	wsMgr := wsmanager.New(clients,
 		func(exchangeName, symbol string, tick model.BookTicker) {
 			// Broadcast raw quote to frontend (for live price display independent of tasks)
+			realAge := clk.RealAge(exchangeName, tick.Timestamp)
 			hub.Broadcast(model.WSEvent{
 				Type:   "quote",
 				TaskID: "",
 				Data: map[string]interface{}{
-					"exchange":    exchangeName,
-					"symbol":      tick.Symbol,
-					"bid":         tick.Bid,
-					"ask":         tick.Ask,
-					"timestamp":   tick.Timestamp,
-					"received_at": tick.ReceivedAt,
+					"exchange":      exchangeName,
+					"symbol":        tick.Symbol,
+					"bid":           tick.Bid,
+					"ask":           tick.Ask,
+					"timestamp":     tick.Timestamp,
+					"received_at":   tick.ReceivedAt,
+					"real_age_ms":   realAge.Milliseconds(),
 				},
 			})
 			if eng != nil {
@@ -63,7 +70,7 @@ func main() {
 	for k, v := range clients {
 		clientsInterface[k] = v
 	}
-	eng = engine.NewEngine(taskMgr, wsMgr, clientsInterface, func(event model.WSEvent) {
+	eng = engine.NewEngine(taskMgr, wsMgr, clientsInterface, clk, func(event model.WSEvent) {
 		hub.Broadcast(event)
 	})
 
@@ -84,6 +91,7 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 	log.Println("Shutting down...")
+	clk.Stop()
 	eng.StopPositionSync()
 	wsMgr.Close()
 	for _, c := range clients {

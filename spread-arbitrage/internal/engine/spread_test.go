@@ -68,7 +68,7 @@ func TestSpread_ShortSpread_OpenSignal(t *testing.T) {
 	// A.bid=100.5, B.ask=99.8 → spread=0.7 > 0.5 → open
 	a := freshTicker("A", 100.5, 100.6)
 	b := freshTicker("B", 99.7, 99.8)
-	sig := se.Evaluate(a, b)
+	sig := se.Evaluate(a, b, time.Since(a.Timestamp), time.Since(b.Timestamp))
 	if sig != SignalOpen { t.Fatalf("expected SignalOpen, got %v", sig) }
 }
 
@@ -84,7 +84,7 @@ func TestSpread_ShortSpread_CloseSignal(t *testing.T) {
 	// A.ask=100.1, B.bid=100.0 → spread=0.1 < 0.2 → close
 	a := freshTicker("A", 100.0, 100.1)
 	b := freshTicker("B", 100.0, 100.1)
-	sig := se.Evaluate(a, b)
+	sig := se.Evaluate(a, b, time.Since(a.Timestamp), time.Since(b.Timestamp))
 	if sig != SignalClose { t.Fatalf("expected SignalClose, got %v", sig) }
 }
 
@@ -100,7 +100,7 @@ func TestSpread_LongSpread_OpenSignal(t *testing.T) {
 	// A.ask=99.8, B.bid=100.5 → spread=-0.7 < -0.5 → open
 	a := freshTicker("A", 99.7, 99.8)
 	b := freshTicker("B", 100.5, 100.6)
-	sig := se.Evaluate(a, b)
+	sig := se.Evaluate(a, b, time.Since(a.Timestamp), time.Since(b.Timestamp))
 	if sig != SignalOpen { t.Fatalf("expected SignalOpen, got %v", sig) }
 }
 
@@ -116,7 +116,7 @@ func TestSpread_LongSpread_CloseSignal(t *testing.T) {
 	// A.bid=100.0, B.ask=99.9 → spread=0.1 > -0.1 → close
 	a := freshTicker("A", 100.0, 100.1)
 	b := freshTicker("B", 99.8, 99.9)
-	sig := se.Evaluate(a, b)
+	sig := se.Evaluate(a, b, time.Since(a.Timestamp), time.Since(b.Timestamp))
 	if sig != SignalClose { t.Fatalf("expected SignalClose, got %v", sig) }
 }
 
@@ -131,7 +131,7 @@ func TestSpread_StaleData_NoSignal(t *testing.T) {
 	se := NewSpreadEvaluator(task)
 	a := staleTicker("A", 100.5, 100.6)
 	b := freshTicker("B", 99.7, 99.8)
-	sig := se.Evaluate(a, b)
+	sig := se.Evaluate(a, b, time.Since(a.Timestamp), time.Since(b.Timestamp))
 	if sig != SignalNone { t.Fatalf("expected SignalNone for stale data, got %v", sig) }
 }
 
@@ -147,7 +147,7 @@ func TestSpread_NoSignal_BelowThreshold(t *testing.T) {
 	// A.bid=100.2, B.ask=100.0 → spread=0.2, between thresholds → no signal
 	a := freshTicker("A", 100.2, 100.3)
 	b := freshTicker("B", 99.9, 100.0)
-	sig := se.Evaluate(a, b)
+	sig := se.Evaluate(a, b, time.Since(a.Timestamp), time.Since(b.Timestamp))
 	if sig != SignalNone { t.Fatalf("expected SignalNone, got %v", sig) }
 }
 
@@ -163,7 +163,7 @@ func TestSpread_ConfirmCountIntegration(t *testing.T) {
 	a := freshTicker("A", 100.5, 100.6)
 	b := freshTicker("B", 99.7, 99.8)
 	// Need 3 consecutive to trigger
-	if se.Evaluate(a, b) != SignalNone { t.Fatal("should not signal on 1st") }
-	if se.Evaluate(a, b) != SignalNone { t.Fatal("should not signal on 2nd") }
-	if se.Evaluate(a, b) != SignalOpen { t.Fatal("should signal open on 3rd") }
+	if se.Evaluate(a, b, time.Since(a.Timestamp), time.Since(b.Timestamp)) != SignalNone { t.Fatal("should not signal on 1st") }
+	if se.Evaluate(a, b, time.Since(a.Timestamp), time.Since(b.Timestamp)) != SignalNone { t.Fatal("should not signal on 2nd") }
+	if se.Evaluate(a, b, time.Since(a.Timestamp), time.Since(b.Timestamp)) != SignalOpen { t.Fatal("should signal open on 3rd") }
 }

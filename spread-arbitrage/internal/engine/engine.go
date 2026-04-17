@@ -5,11 +5,15 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"log"
 	"math"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
+	"spread-arbitrage/internal/clocksync"
 	"spread-arbitrage/internal/exchange"
 	"spread-arbitrage/internal/model"
 	"spread-arbitrage/internal/wsmanager"
@@ -17,10 +21,32 @@ import (
 
 type EventCallback func(event model.WSEvent)
 
+// tradeLog writes key trading events to both stdout and a daily log file.
+var tradeLog *log.Logger
+var tradeLogFile *os.File
+
+func initTradeLog() {
+	os.MkdirAll("logs", 0755)
+	path := filepath.Join("logs", fmt.Sprintf("trades-%s.log", time.Now().Format("2006-01-02")))
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		log.Printf("Failed to open trade log %s: %v", path, err)
+		tradeLog = log.New(os.Stdout, "", log.LstdFlags)
+		return
+	}
+	tradeLogFile = f
+	tradeLog = log.New(io.MultiWriter(os.Stdout, f), "", log.LstdFlags)
+}
+
+func init() {
+	initTradeLog()
+}
+
 type Engine struct {
 	taskMgr    *TaskManager
 	wsMgr      *wsmanager.Manager
 	clients    map[string]interface{}
+	clk        *clocksync.Syncer
 	evaluators map[string]*SpreadEvaluator
 	positions  map[string]float64 // task ID → cached position qty (synced from exchange)
 	mu         sync.RWMutex
@@ -28,11 +54,12 @@ type Engine struct {
 	syncStop   chan struct{}
 }
 
-func NewEngine(taskMgr *TaskManager, wsMgr *wsmanager.Manager, clients map[string]interface{}, onEvent EventCallback) *Engine {
+func NewEngine(taskMgr *TaskManager, wsMgr *wsmanager.Manager, clients map[string]interface{}, clk *clocksync.Syncer, onEvent EventCallback) *Engine {
 	return &Engine{
 		taskMgr:    taskMgr,
 		wsMgr:      wsMgr,
 		clients:    clients,
+		clk:        clk,
 		evaluators: make(map[string]*SpreadEvaluator),
 		positions:  make(map[string]float64),
 		onEvent:    onEvent,
@@ -197,10 +224,51 @@ func (e *Engine) ProcessTick(ctx context.Context, taskID string, tickA, tickB mo
 		return SignalNone
 	}
 
-	signal := evaluator.Evaluate(tickA, tickB)
+	// Calculate clock-synced real ages for latency checks and logging
+	var durA, durB time.Duration
+	if e.clk != nil {
+		durA = e.clk.RealAge(task.ExchangeA, tickA.Timestamp)
+		durB = e.clk.RealAge(task.ExchangeB, tickB.Timestamp)
+	} else {
+		now := time.Now()
+		durA = now.Sub(tickA.ReceivedAt)
+		durB = now.Sub(tickB.ReceivedAt)
+	}
+	ageA := durA.Milliseconds()
+	ageB := durB.Milliseconds()
+
+	prevOpen, prevClose := evaluator.Counters()
+	signal := evaluator.Evaluate(tickA, tickB, durA, durB)
 
 	openCounter, closeCounter := evaluator.Counters()
 	spread := evaluator.CurrentSpread(tickA, tickB)
+
+	// Log confirm counter changes for debugging
+	// When signal triggers, counter resets to 0 internally, so log N/N for that case
+	if signal == SignalOpen {
+		tradeLog.Printf("[engine] CONFIRM OPEN %d/%d task=%s spread=%.6f threshold=%.6f A=[bid=%.6f ask=%.6f ts=%s age=%dms] B=[bid=%.6f ask=%.6f ts=%s age=%dms]",
+			task.ConfirmCount, task.ConfirmCount, taskID, spread, task.OpenThreshold,
+			tickA.Bid, tickA.Ask, tickA.Timestamp.Format("15:04:05.000"), ageA,
+			tickB.Bid, tickB.Ask, tickB.Timestamp.Format("15:04:05.000"), ageB)
+	} else if signal == SignalClose {
+		tradeLog.Printf("[engine] CONFIRM CLOSE %d/%d task=%s spread=%.6f threshold=%.6f A=[bid=%.6f ask=%.6f ts=%s age=%dms] B=[bid=%.6f ask=%.6f ts=%s age=%dms]",
+			task.ConfirmCount, task.ConfirmCount, taskID, spread, task.CloseThreshold,
+			tickA.Bid, tickA.Ask, tickA.Timestamp.Format("15:04:05.000"), ageA,
+			tickB.Bid, tickB.Ask, tickB.Timestamp.Format("15:04:05.000"), ageB)
+	} else {
+		if openCounter > 0 && openCounter > prevOpen {
+			tradeLog.Printf("[engine] CONFIRM OPEN %d/%d task=%s spread=%.6f threshold=%.6f A=[bid=%.6f ask=%.6f ts=%s age=%dms] B=[bid=%.6f ask=%.6f ts=%s age=%dms]",
+				openCounter, task.ConfirmCount, taskID, spread, task.OpenThreshold,
+				tickA.Bid, tickA.Ask, tickA.Timestamp.Format("15:04:05.000"), ageA,
+				tickB.Bid, tickB.Ask, tickB.Timestamp.Format("15:04:05.000"), ageB)
+		}
+		if closeCounter > 0 && closeCounter > prevClose {
+			tradeLog.Printf("[engine] CONFIRM CLOSE %d/%d task=%s spread=%.6f threshold=%.6f A=[bid=%.6f ask=%.6f ts=%s age=%dms] B=[bid=%.6f ask=%.6f ts=%s age=%dms]",
+				closeCounter, task.ConfirmCount, taskID, spread, task.CloseThreshold,
+				tickA.Bid, tickA.Ask, tickA.Timestamp.Format("15:04:05.000"), ageA,
+				tickB.Bid, tickB.Ask, tickB.Timestamp.Format("15:04:05.000"), ageB)
+		}
+	}
 
 	if e.onEvent != nil {
 		e.onEvent(model.WSEvent{
@@ -226,31 +294,31 @@ func (e *Engine) ProcessTick(ctx context.Context, taskID string, tickA, tickB mo
 
 	if signal == SignalOpen {
 		if currentPos+task.QuantityPerOrder <= task.MaxPositionQty {
-			log.Printf("[engine] SIGNAL OPEN task=%s dir=%s spread=%.6f threshold=%.6f pos=%.4f qty=%.4f max=%.4f A=[bid=%.6f ask=%.6f] B=[bid=%.6f ask=%.6f]",
+			tradeLog.Printf("[engine] SIGNAL OPEN task=%s dir=%s spread=%.6f threshold=%.6f pos=%.4f qty=%.4f max=%.4f A=[bid=%.6f ask=%.6f ts=%s age=%dms] B=[bid=%.6f ask=%.6f ts=%s age=%dms]",
 				taskID, task.Direction, spread, task.OpenThreshold, currentPos, task.QuantityPerOrder, task.MaxPositionQty,
-				tickA.Bid, tickA.Ask, tickB.Bid, tickB.Ask)
+				tickA.Bid, tickA.Ask, tickA.Timestamp.Format("15:04:05.000"), ageA,
+				tickB.Bid, tickB.Ask, tickB.Timestamp.Format("15:04:05.000"), ageB)
 			if err := e.executeOpenLocked(ctx, task); err != nil {
-				log.Printf("[engine] OPEN FAILED task=%s: %v", taskID, err)
+				tradeLog.Printf("[engine] OPEN FAILED task=%s: %v", taskID, err)
 				e.taskMgr.SetStatus(taskID, model.StatusStopped)
 				delete(e.evaluators, taskID)
 			} else {
-				// Reset confirm counters after successful trade to prevent
-				// queued ticks from immediately triggering another trade
 				evaluator.Reset()
 			}
 		} else {
-			log.Printf("[engine] OPEN BLOCKED (max position) task=%s pos=%.4f + qty=%.4f > max=%.4f",
+			tradeLog.Printf("[engine] OPEN BLOCKED (max position) task=%s pos=%.4f + qty=%.4f > max=%.4f",
 				taskID, currentPos, task.QuantityPerOrder, task.MaxPositionQty)
 			evaluator.Reset()
 		}
 	} else if signal == SignalClose {
 		if currentPos > 0 {
 			closeQty := math.Min(task.QuantityPerOrder, currentPos)
-			log.Printf("[engine] SIGNAL CLOSE task=%s dir=%s spread=%.6f threshold=%.6f pos=%.4f closeQty=%.4f A=[bid=%.6f ask=%.6f] B=[bid=%.6f ask=%.6f]",
+			tradeLog.Printf("[engine] SIGNAL CLOSE task=%s dir=%s spread=%.6f threshold=%.6f pos=%.4f closeQty=%.4f A=[bid=%.6f ask=%.6f ts=%s age=%dms] B=[bid=%.6f ask=%.6f ts=%s age=%dms]",
 				taskID, task.Direction, spread, task.CloseThreshold, currentPos, closeQty,
-				tickA.Bid, tickA.Ask, tickB.Bid, tickB.Ask)
+				tickA.Bid, tickA.Ask, tickA.Timestamp.Format("15:04:05.000"), ageA,
+				tickB.Bid, tickB.Ask, tickB.Timestamp.Format("15:04:05.000"), ageB)
 			if err := e.executeCloseLocked(ctx, task, closeQty); err != nil {
-				log.Printf("[engine] CLOSE FAILED task=%s: %v", taskID, err)
+				tradeLog.Printf("[engine] CLOSE FAILED task=%s: %v", taskID, err)
 				e.taskMgr.SetStatus(taskID, model.StatusStopped)
 				delete(e.evaluators, taskID)
 			} else {
@@ -450,7 +518,7 @@ func (e *Engine) executeOpenLocked(ctx context.Context, task *model.Task) error 
 
 	// Position cache updated optimistically above; background sync will reconcile
 
-	log.Printf("[engine] Executed open for task %s: %s@%s, %s@%s (position: %.4f)",
+	tradeLog.Printf("[engine] Executed open for task %s: %s@%s, %s@%s (position: %.4f)",
 		task.ID, sideA, task.ExchangeA, sideB, task.ExchangeB, e.positions[task.ID])
 	return nil
 }
@@ -531,7 +599,7 @@ func (e *Engine) executeCloseLocked(ctx context.Context, task *model.Task, qty f
 
 	// Position cache updated optimistically above; background sync will reconcile
 
-	log.Printf("[engine] Executed close for task %s: %s@%s, %s@%s (position: %.4f)",
+	tradeLog.Printf("[engine] Executed close for task %s: %s@%s, %s@%s (position: %.4f)",
 		task.ID, sideA, task.ExchangeA, sideB, task.ExchangeB, e.positions[task.ID])
 	return nil
 }
@@ -562,19 +630,19 @@ func (e *Engine) handleSingleLegFailure(ctx context.Context, task *model.Task, a
 
 	var reverseErr error
 	for attempt := 1; attempt <= 3; attempt++ {
-		log.Printf("[engine] SINGLE-LEG RISK (%s) task %s: %s failed, reversing %s on %s (attempt %d/3)",
+		tradeLog.Printf("[engine] SINGLE-LEG RISK (%s) task %s: %s failed, reversing %s on %s (attempt %d/3)",
 			action, task.ID, failedSide, reverseSide, successExchange, attempt)
 		reverseID := fmt.Sprintf("sa-%s-R%d", genTriggerID(), attempt)
 		_, reverseErr = e.placeOrder(ctx, successClient, task.Symbol, reverseSide, qty, reverseID)
 		if reverseErr == nil {
-			log.Printf("[engine] Reverse succeeded for task %s on %s", task.ID, successExchange)
+			tradeLog.Printf("[engine] Reverse succeeded for task %s on %s", task.ID, successExchange)
 			break
 		}
-		log.Printf("[engine] Reverse attempt %d failed for task %s: %v", attempt, task.ID, reverseErr)
+		tradeLog.Printf("[engine] Reverse attempt %d failed for task %s: %v", attempt, task.ID, reverseErr)
 	}
 
 	if reverseErr != nil {
-		log.Printf("[engine] CRITICAL: task %s has NAKED POSITION on %s (%s %.4f %s)",
+		tradeLog.Printf("[engine] CRITICAL: task %s has NAKED POSITION on %s (%s %.4f %s)",
 			task.ID, successExchange, successOrderSide, qty, task.Symbol)
 		if e.onEvent != nil {
 			e.onEvent(model.WSEvent{

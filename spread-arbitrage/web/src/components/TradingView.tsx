@@ -22,6 +22,7 @@ interface Quote {
   bid: number
   ask: number
   timestamp: string
+  realAgeMs: number
 }
 
 interface SpreadUpdate {
@@ -113,8 +114,8 @@ export function TradingView({ symbol, exchangeA, exchangeB }: TradingViewProps) 
     if (event.type === 'quote') {
       const d = event.data
       if (d.symbol === symbol || d.symbol === '') {
-        if (d.exchange === exchangeA) setQuoteA({ bid: d.bid, ask: d.ask, timestamp: d.timestamp })
-        if (d.exchange === exchangeB) setQuoteB({ bid: d.bid, ask: d.ask, timestamp: d.timestamp })
+        if (d.exchange === exchangeA) setQuoteA({ bid: d.bid, ask: d.ask, timestamp: d.timestamp, realAgeMs: d.real_age_ms ?? 0 })
+        if (d.exchange === exchangeB) setQuoteB({ bid: d.bid, ask: d.ask, timestamp: d.timestamp, realAgeMs: d.real_age_ms ?? 0 })
       }
     }
     if (event.type === 'orderbook') {
@@ -230,9 +231,7 @@ export function TradingView({ symbol, exchangeA, exchangeB }: TradingViewProps) 
           }}>&larr;</a>
           <span style={{ fontFamily: 'var(--font-mono)', fontSize: 18, fontWeight: 700 }}>{symbol}</span>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <span style={{ fontSize: 12, fontWeight: 600, color: colorA, background: `${colorA}15`, padding: '3px 10px', borderRadius: 6 }}>
-              {exchangeA.toUpperCase()}
-            </span>
+            <ExchangeBadge name={exchangeA} color={colorA} ageMs={quoteA?.realAgeMs} />
             <a
               href={`/trade/${symbol}/${exchangeB}/${exchangeA}`}
               style={{
@@ -244,9 +243,7 @@ export function TradingView({ symbol, exchangeA, exchangeB }: TradingViewProps) 
               onMouseLeave={e => (e.currentTarget.style.color = 'var(--text-dim)')}
               title="交换 A / B"
             >⇄</a>
-            <span style={{ fontSize: 12, fontWeight: 600, color: colorB, background: `${colorB}15`, padding: '3px 10px', borderRadius: 6 }}>
-              {exchangeB.toUpperCase()}
-            </span>
+            <ExchangeBadge name={exchangeB} color={colorB} ageMs={quoteB?.realAgeMs} />
           </div>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -503,6 +500,26 @@ export function TradingView({ symbol, exchangeA, exchangeB }: TradingViewProps) 
 }
 
 /* ── Sub-components ── */
+
+function exchangeAgeColor(ms: number | undefined): string {
+  if (ms === undefined) return 'var(--text-dim)'
+  if (ms < 100) return 'var(--accent-green)'
+  if (ms < 500) return 'var(--accent-amber)'
+  return 'var(--accent-red)'
+}
+
+function ExchangeBadge({ name, color, ageMs }: { name: string; color: string; ageMs?: number }) {
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 12, fontWeight: 600, color, background: `${color}15`, padding: '3px 10px', borderRadius: 6 }}>
+      {name.toUpperCase()}
+      {ageMs !== undefined && (
+        <span style={{ fontSize: 10, fontFamily: 'var(--font-mono)', color: exchangeAgeColor(ageMs), fontWeight: 400 }}>
+          {ageMs}ms
+        </span>
+      )}
+    </span>
+  )
+}
 
 function Panel({ title, action, children }: { title: string; action?: React.ReactNode; children: React.ReactNode }) {
   return (
