@@ -1,0 +1,44 @@
+name: Build and Push to ECR
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'spread-arbitrage/**'
+  workflow_dispatch:
+
+env:
+  AWS_REGION: ap-northeast-1
+  ECR_REGISTRY: 854900661867.dkr.ecr.ap-northeast-1.amazonaws.com
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push backend
+        run: |
+          docker build -t $ECR_REGISTRY/spread-arbitrage:latest \
+                        -t $ECR_REGISTRY/spread-arbitrage:${{ github.sha }} \
+                        -f spread-arbitrage/Dockerfile \
+                        spread-arbitrage/
+          docker push $ECR_REGISTRY/spread-arbitrage --all-tags
+
+      - name: Build and push frontend
+        run: |
+          docker build -t $ECR_REGISTRY/spread-arb-frontend:latest \
+                        -t $ECR_REGISTRY/spread-arb-frontend:${{ github.sha }} \
+                        -f deploy/Dockerfile.frontend \
+                        .
+          docker push $ECR_REGISTRY/spread-arb-frontend --all-tags
