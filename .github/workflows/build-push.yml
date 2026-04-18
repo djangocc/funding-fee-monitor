@@ -39,6 +39,6 @@ jobs:
         run: |
           docker build -t $ECR_REGISTRY/spread-arb-frontend:latest \
                         -t $ECR_REGISTRY/spread-arb-frontend:${{ github.sha }} \
-                        -f deploy/Dockerfile.frontend \
-                        .
+                        -f spread-arbitrage/web/Dockerfile \
+                        spread-arbitrage/web/
           docker push $ECR_REGISTRY/spread-arb-frontend --all-tags

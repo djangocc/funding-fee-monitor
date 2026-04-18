@@ -1,0 +1,68 @@
+services:
+  # --- Trading Engine (API only, no frontend) ---
+  spread-arbitrage:
+    image: 854900661867.dkr.ecr.ap-northeast-1.amazonaws.com/spread-arbitrage:latest
+    env_file: .env
+    restart: unless-stopped
+    volumes:
+      - app-logs:/app/logs
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  # --- Frontend (Nginx + React static files + API/WS reverse proxy) ---
+  frontend:
+    image: 854900661867.dkr.ecr.ap-northeast-1.amazonaws.com/spread-arb-frontend:latest
+    ports:
+      - "127.0.0.1:18528:80"
+    restart: unless-stopped
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - spread-arbitrage
+
+  # --- Log Storage ---
+  victorialogs:
+    image: victoriametrics/victoria-logs:latest
+    restart: unless-stopped
+    volumes:
+      - vlogs-data:/vlogs
+    command:
+      - -storageDataPath=/vlogs
+      - -retentionPeriod=30d
+
+  # --- Log Collector ---
+  promtail:
+    image: grafana/promtail:latest
+    restart: unless-stopped
+    volumes:
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./promtail.yml:/etc/promtail/config.yml:ro
+    depends_on:
+      - victorialogs
+
+  # --- Dashboard ---
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "127.0.0.1:3000:3000"
+    restart: unless-stopped
+    environment:
+      GF_SERVER_ROOT_URL: "%(protocol)s://%(domain)s/grafana/"
+      GF_SERVER_SERVE_FROM_SUB_PATH: "true"
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: "Admin"
+      GF_SECURITY_ADMIN_PASSWORD: "admin"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana-datasources.yml:/etc/grafana/provisioning/datasources/ds.yml:ro
+    depends_on:
+      - victorialogs
+
+volumes:
+  app-logs:
+  vlogs-data:
+  grafana-data:

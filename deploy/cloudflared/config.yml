@@ -1,0 +1,13 @@
+# Cloudflared runs on host as systemd service, not in Docker.
+# Replace YOUR_TUNNEL_ID and YOUR_DOMAIN before use.
+
+tunnel: YOUR_TUNNEL_ID
+credentials-file: /etc/cloudflared/credentials.json
+
+ingress:
+  - hostname: YOUR_DOMAIN
+    path: /grafana/*
+    service: http://localhost:3000
+  - hostname: YOUR_DOMAIN
+    service: http://localhost:18528
+  - service: http_status:404
