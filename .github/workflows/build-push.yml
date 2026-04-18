@@ -43,6 +43,17 @@ jobs:
                         spread-arbitrage/web/
           docker push $ECR_REGISTRY/spread-arb-frontend --all-tags
 
+      - name: Verify no .env in images
+        run: |
+          for img in $ECR_REGISTRY/spread-arbitrage:latest $ECR_REGISTRY/spread-arb-frontend:latest; do
+            echo "Scanning $img for .env files..."
+            if docker run --rm --entrypoint sh $img -c "find / -name '.env*' 2>/dev/null | head -20" | grep -q .env; then
+              echo "::error::Found .env file in $img"
+              exit 1
+            fi
+            echo "  OK — no .env files"
+          done
+
       - name: List images in ECR
         run: |
           for repo in spread-arbitrage spread-arb-frontend; do
@@ -50,7 +61,7 @@ jobs:
             echo "Repo: $repo"
             echo "===================="
             aws ecr describe-images --repository-name $repo --region $AWS_REGION \
-              --query 'sort_by(imageDetails,&imagePushedAt)[*].{tags:imageTags,pushedAt:imagePushedAt,sizeMB:(imageSizeInBytes/`1048576`)}' \
+              --query 'sort_by(imageDetails,&imagePushedAt)[*].{tags:imageTags,pushedAt:imagePushedAt,sizeBytes:imageSizeInBytes}' \
               --output table
             echo ""
             echo "Latest points to commit: ${{ github.sha }}"
