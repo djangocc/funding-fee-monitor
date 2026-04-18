@@ -42,3 +42,17 @@ jobs:
                         -f spread-arbitrage/web/Dockerfile \
                         spread-arbitrage/web/
           docker push $ECR_REGISTRY/spread-arb-frontend --all-tags
+
+      - name: List images in ECR
+        run: |
+          for repo in spread-arbitrage spread-arb-frontend; do
+            echo "===================="
+            echo "Repo: $repo"
+            echo "===================="
+            aws ecr describe-images --repository-name $repo --region $AWS_REGION \
+              --query 'sort_by(imageDetails,&imagePushedAt)[*].{tags:imageTags,pushedAt:imagePushedAt,sizeMB:(imageSizeInBytes/`1048576`)}' \
+              --output table
+            echo ""
+            echo "Latest points to commit: ${{ github.sha }}"
+            echo ""
+          done
