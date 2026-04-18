@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"sync"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
@@ -51,6 +52,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.POST("/test-trade/:exchange", h.TestTrade)
 
 	// Query positions/trades/funding by exchange+symbol directly (no task required)
+	api.GET("/positions/all/:symbol", h.GetAllPositions)
 	api.GET("/positions/:exchange/:symbol", h.GetPositionsByExchange)
 	api.GET("/orders/:exchange/:symbol", h.GetOrdersByExchange)
 	api.GET("/funding/:exchange/:symbol", h.GetFundingRate)
@@ -295,6 +297,33 @@ func (h *Handler) Unsubscribe(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "unsubscribed"})
 }
 
+// GetAllPositions returns positions from all exchanges for a symbol in one call
+func (h *Handler) GetAllPositions(c *gin.Context) {
+	symbol := c.Param("symbol")
+	ctx := context.Background()
+
+	var mu sync.Mutex
+	var positions []*model.Position
+	var wg sync.WaitGroup
+
+	for name, client := range h.clients {
+		wg.Add(1)
+		go func(exName string, cl exchange.Client) {
+			defer wg.Done()
+			pos, err := cl.GetPosition(ctx, symbol)
+			if err != nil {
+				pos = &model.Position{Exchange: exName, Symbol: symbol}
+			}
+			mu.Lock()
+			positions = append(positions, pos)
+			mu.Unlock()
+		}(name, client)
+	}
+	wg.Wait()
+
+	c.JSON(http.StatusOK, positions)
+}
+
 // GetPositionsByExchange returns position for a specific exchange+symbol
 func (h *Handler) GetPositionsByExchange(c *gin.Context) {
 	exchangeName := c.Param("exchange")
@@ -396,9 +425,21 @@ func (h *Handler) TestTrade(c *gin.Context) {
 	result.PositionCheck = pos
 	result.Steps = append(result.Steps, fmt.Sprintf("READ-ONLY OK: position side=%s size=%.4f", pos.Side, pos.Size))
 
-	// Step 1: Buy
+	var err error
+
+	// Step 1: Buy (prefer WS, fallback REST)
 	result.Steps = append(result.Steps, "Placing BUY order...")
-	buyOrder, err := client.PlaceMarketOrder(ctx, symbol, "BUY", qty, "sa-test-buy")
+	var buyOrder *model.Order
+	if wsPlacer, ok := client.(exchange.WSOrderPlacer); ok {
+		result.Steps = append(result.Steps, "Using WebSocket order placement")
+		buyOrder, err = wsPlacer.PlaceMarketOrderWS(ctx, symbol, "BUY", qty, "sa-test-buy")
+		if err != nil {
+			result.Steps = append(result.Steps, "WS BUY failed, falling back to REST: "+err.Error())
+			buyOrder, err = client.PlaceMarketOrder(ctx, symbol, "BUY", qty, "sa-test-buy")
+		}
+	} else {
+		buyOrder, err = client.PlaceMarketOrder(ctx, symbol, "BUY", qty, "sa-test-buy")
+	}
 	if err != nil {
 		result.Error = "BUY failed: " + err.Error()
 		result.Steps = append(result.Steps, "BUY FAILED: "+err.Error())
@@ -408,9 +449,18 @@ func (h *Handler) TestTrade(c *gin.Context) {
 	result.BuyOrder = buyOrder
 	result.Steps = append(result.Steps, "BUY OK: orderId="+buyOrder.OrderID)
 
-	// Step 2: Sell (close)
+	// Step 2: Sell (prefer WS, fallback REST)
 	result.Steps = append(result.Steps, "Placing SELL order to close...")
-	sellOrder, err := client.PlaceMarketOrder(ctx, symbol, "SELL", qty, "sa-test-sell")
+	var sellOrder *model.Order
+	if wsPlacer, ok := client.(exchange.WSOrderPlacer); ok {
+		sellOrder, err = wsPlacer.PlaceMarketOrderWS(ctx, symbol, "SELL", qty, "sa-test-sell")
+		if err != nil {
+			result.Steps = append(result.Steps, "WS SELL failed, falling back to REST: "+err.Error())
+			sellOrder, err = client.PlaceMarketOrder(ctx, symbol, "SELL", qty, "sa-test-sell")
+		}
+	} else {
+		sellOrder, err = client.PlaceMarketOrder(ctx, symbol, "SELL", qty, "sa-test-sell")
+	}
 	if err != nil {
 		result.Error = "SELL failed (position may remain open!): " + err.Error()
 		result.Steps = append(result.Steps, "SELL FAILED: "+err.Error())

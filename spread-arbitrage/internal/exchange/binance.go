@@ -491,7 +491,7 @@ func (c *BinanceClient) PlaceMarketOrder(ctx context.Context, symbol string, sid
 		Timestamp:     time.UnixMilli(resp.UpdateTime),
 	}
 
-	log.Printf("[%s] ORDER FILLED: %s %s qty=%.8f avgPrice=%.8f orderId=%s clientOrderId=%s status=%s", c.name, order.Side, order.Symbol, order.Quantity, order.Price, order.OrderID, order.ClientOrderID, order.Status)
+	log.Printf("[%s] ORDER PLACED: %s %s qty=%.8f avgPrice=%.8f orderId=%s clientOrderId=%s status=%s", c.name, order.Side, order.Symbol, order.Quantity, order.Price, order.OrderID, order.ClientOrderID, order.Status)
 	return order, nil
 }
 

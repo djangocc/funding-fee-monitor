@@ -38,7 +38,10 @@ func NewAsterClient(user, signer, privateKeyHex string) *AsterClient {
 	httpClient := &http.Client{
 		Timeout: 10 * time.Second,
 		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+			TLSClientConfig:    &tls.Config{InsecureSkipVerify: true},
+			MaxIdleConns:       100,
+			MaxIdleConnsPerHost: 10,
+			IdleConnTimeout:    90 * time.Second,
 		},
 	}
 	wsDialer := &websocket.Dialer{
@@ -368,7 +371,7 @@ func (c *AsterClient) PlaceMarketOrder(ctx context.Context, symbol string, side 
 		Timestamp:     time.UnixMilli(updateTime),
 	}
 
-	log.Printf("[%s] ORDER FILLED: %s %s qty=%.8f avgPrice=%.8f orderId=%s clientOrderId=%s status=%s", c.name, order.Side, order.Symbol, order.Quantity, order.Price, order.OrderID, order.ClientOrderID, order.Status)
+	log.Printf("[%s] ORDER PLACED: %s %s qty=%.8f avgPrice=%.8f orderId=%s clientOrderId=%s status=%s", c.name, order.Side, order.Symbol, order.Quantity, order.Price, order.OrderID, order.ClientOrderID, order.Status)
 	return order, nil
 }
 

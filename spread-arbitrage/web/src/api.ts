@@ -137,6 +137,12 @@ export async function getPositionByExchange(exchange: string, symbol: string): P
   return res.json()
 }
 
+export async function getAllPositions(symbol: string): Promise<Position[]> {
+  const res = await fetch(`${BASE}/positions/all/${symbol}`)
+  if (!res.ok) throw new Error(await res.text())
+  return res.json()
+}
+
 export async function getOrdersByExchange(exchange: string, symbol: string): Promise<Order[]> {
   const res = await fetch(`${BASE}/orders/${exchange}/${symbol}`)
   if (!res.ok) throw new Error(await res.text())

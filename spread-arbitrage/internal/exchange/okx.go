@@ -489,7 +489,7 @@ func (c *OKXClient) PlaceMarketOrder(ctx context.Context, symbol string, side st
 		Timestamp:     time.Now(),
 	}
 
-	log.Printf("[%s] ORDER FILLED: %s %s qty=%.8f orderId=%s clientOrderId=%s", c.name, order.Side, order.Symbol, order.Quantity, order.OrderID, order.ClientOrderID)
+	log.Printf("[%s] ORDER PLACED: %s %s qty=%.8f orderId=%s clientOrderId=%s", c.name, order.Side, order.Symbol, order.Quantity, order.OrderID, order.ClientOrderID)
 	return order, nil
 }
 
@@ -510,6 +510,10 @@ type okxPositionResponse struct {
 
 // GetPosition retrieves the current position for a symbol
 func (c *OKXClient) GetPosition(ctx context.Context, symbol string) (*model.Position, error) {
+	if c.apiKey == "" {
+		return &model.Position{Exchange: c.name, Symbol: symbol}, nil
+	}
+
 	instID := symbolToInstID(symbol)
 	endpoint := fmt.Sprintf("/api/v5/account/positions?instId=%s", instID)
 
@@ -590,6 +594,10 @@ type okxTradeResponse struct {
 
 // GetTrades retrieves recent trades for a symbol
 func (c *OKXClient) GetOrders(ctx context.Context, symbol string) ([]model.Order, error) {
+	if c.apiKey == "" {
+		return nil, nil
+	}
+
 	instID := symbolToInstID(symbol)
 	endpoint := fmt.Sprintf("/api/v5/trade/orders-history?instType=SWAP&instId=%s&limit=50", instID)
 

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useCallback, useState } from 'react'
 
 export interface WSEvent {
-  type: 'spread_update' | 'task_status' | 'trade_executed' | 'error' | 'quote' | 'orderbook'
+  type: 'spread_update' | 'task_status' | 'trade_executed' | 'error' | 'quote' | 'orderbook' | 'position_update' | 'order_update' | 'external_order' | 'rebalance'
   task_id: string
   data: any
 }

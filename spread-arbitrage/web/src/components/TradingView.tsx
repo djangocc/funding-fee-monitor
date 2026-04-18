@@ -1,6 +1,7 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useWebSocket, type WSEvent } from '../hooks/useWebSocket'
 import { useToast, playSound } from '../hooks/useToast'
+import { useTicker, useOrderBook, useFundingRate } from '../hooks/useMarketData'
 import { OrderBook } from './OrderBook'
 import { ToastContainer } from './ToastContainer'
 import * as api from '../api'
@@ -18,13 +19,6 @@ const EXCHANGE_COLORS: Record<string, string> = {
   okx: '#00c8ff',
 }
 
-interface Quote {
-  bid: number
-  ask: number
-  timestamp: string
-  realAgeMs: number
-}
-
 interface SpreadUpdate {
   spread: number
   open_counter: number
@@ -33,13 +27,8 @@ interface SpreadUpdate {
   ask_a: number
   bid_b: number
   ask_b: number
-}
-
-interface OrderBookData {
-  exchange: string
-  symbol: string
-  bids: { price: number; quantity: number }[]
-  asks: { price: number; quantity: number }[]
+  age_a_ms: number
+  age_b_ms: number
 }
 
 interface TradingViewProps {
@@ -49,20 +38,32 @@ interface TradingViewProps {
 }
 
 export function TradingView({ symbol, exchangeA, exchangeB }: TradingViewProps) {
-  const [quoteA, setQuoteA] = useState<Quote | null>(null)
-  const [quoteB, setQuoteB] = useState<Quote | null>(null)
-  const [bookA, setBookA] = useState<OrderBookData | null>(null)
-  const [fundingA, setFundingA] = useState<api.FundingRate | null>(null)
-  const [fundingB, setFundingB] = useState<api.FundingRate | null>(null)
-  const [bookB, setBookB] = useState<OrderBookData | null>(null)
+  // Market data from exchange WS (direct to exchange)
+  const tickerA = useTicker(exchangeA, symbol)
+  const tickerB = useTicker(exchangeB, symbol)
+  const bookA = useOrderBook(exchangeA, symbol)
+  const bookB = useOrderBook(exchangeB, symbol)
+  const fundingA = useFundingRate(exchangeA, symbol)
+  const fundingB = useFundingRate(exchangeB, symbol)
+
+  // Orders: backend REST + WS trade_executed prepend
+  const [tradesA, setTradesA] = useState<api.Order[]>([])
+  const [tradesB, setTradesB] = useState<api.Order[]>([])
+
+  const refreshTrades = useCallback(async () => {
+    try { setTradesA(await api.getOrdersByExchange(exchangeA, symbol)) } catch { /* ignore */ }
+    try { setTradesB(await api.getOrdersByExchange(exchangeB, symbol)) } catch { /* ignore */ }
+  }, [exchangeA, exchangeB, symbol])
+
+  // Engine state from backend
   const [tasks, setTasks] = useState<api.Task[]>([])
   const [spreads, setSpreads] = useState<Map<string, SpreadUpdate>>(new Map())
   const [positions, setPositions] = useState<api.Position[]>([])
-  const [tradesA, setTradesA] = useState<api.Order[]>([])
-  const [tradesB, setTradesB] = useState<api.Order[]>([])
+  const [engineAgeA, setEngineAgeA] = useState<number | undefined>(undefined)
+  const [engineAgeB, setEngineAgeB] = useState<number | undefined>(undefined)
   const [showCreatePanel, setShowCreatePanel] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const subscribed = useRef(false)
+
   const { toasts, addToast, removeToast } = useToast()
 
   // Task form state
@@ -74,20 +75,6 @@ export function TradingView({ symbol, exchangeA, exchangeB }: TradingViewProps) 
   const [maxPositionQty, setMaxPositionQty] = useState('3')
   const [latencyMs, setLatencyMs] = useState('50')
 
-  // Subscribe to market data on mount
-  useEffect(() => {
-    if (!subscribed.current) {
-      subscribed.current = true
-      api.subscribe(exchangeA, symbol).catch(e => console.warn('subscribe A:', e))
-      api.subscribe(exchangeB, symbol).catch(e => console.warn('subscribe B:', e))
-    }
-    return () => {
-      api.unsubscribe(exchangeA, symbol).catch(() => {})
-      api.unsubscribe(exchangeB, symbol).catch(() => {})
-      subscribed.current = false
-    }
-  }, [exchangeA, exchangeB, symbol])
-
   const refreshTasks = useCallback(async () => {
     try {
       const all = await api.listTasks()
@@ -97,34 +84,17 @@ export function TradingView({ symbol, exchangeA, exchangeB }: TradingViewProps) 
 
   const refreshPositions = useCallback(async () => {
     try {
-      const [posA, posB] = await Promise.all([
-        api.getPositionByExchange(exchangeA, symbol),
-        api.getPositionByExchange(exchangeB, symbol),
-      ])
-      setPositions([posA, posB])
+      setPositions(await api.getAllPositions(symbol))
     } catch { /* ignore */ }
-  }, [exchangeA, exchangeB, symbol])
+  }, [symbol])
 
-  const refreshTrades = useCallback(async () => {
-    try { setTradesA(await api.getOrdersByExchange(exchangeA, symbol)) } catch { /* ignore */ }
-    try { setTradesB(await api.getOrdersByExchange(exchangeB, symbol)) } catch { /* ignore */ }
-  }, [exchangeA, exchangeB, symbol])
-
+  // Backend WS: only engine events (no market data)
   const handleWS = useCallback((event: WSEvent) => {
-    if (event.type === 'quote') {
-      const d = event.data
-      if (d.symbol === symbol || d.symbol === '') {
-        if (d.exchange === exchangeA) setQuoteA({ bid: d.bid, ask: d.ask, timestamp: d.timestamp, realAgeMs: d.real_age_ms ?? 0 })
-        if (d.exchange === exchangeB) setQuoteB({ bid: d.bid, ask: d.ask, timestamp: d.timestamp, realAgeMs: d.real_age_ms ?? 0 })
-      }
-    }
-    if (event.type === 'orderbook') {
-      const d = event.data as OrderBookData
-      if (d.exchange === exchangeA) setBookA(d)
-      if (d.exchange === exchangeB) setBookB(d)
-    }
     if (event.type === 'spread_update') {
-      setSpreads(prev => new Map(prev).set(event.task_id, event.data))
+      const d = event.data as SpreadUpdate
+      setSpreads(prev => new Map(prev).set(event.task_id, d))
+      if (d.age_a_ms !== undefined) setEngineAgeA(d.age_a_ms)
+      if (d.age_b_ms !== undefined) setEngineAgeB(d.age_b_ms)
     }
     if (event.type === 'trade_executed') {
       const d = event.data as any
@@ -143,8 +113,32 @@ export function TradingView({ symbol, exchangeA, exchangeB }: TradingViewProps) 
       refreshPositions()
       refreshTrades()
     }
+    if (event.type === 'external_order') {
+      const d = event.data as any
+      const msg = `外部订单成交：${d.exchange?.toUpperCase()} ${d.side} ${d.symbol} ${d.quantity}个 @${d.price?.toFixed(4) ?? '?'}`
+      addToast(msg, 'info', 8000)
+      playSound(d.side === 'BUY' ? 'open' : 'close')
+      refreshPositions()
+      refreshTrades()
+    }
+    if (event.type === 'rebalance') {
+      const d = event.data as any
+      const msg = `自动 Rebalance：${d.exchange?.toUpperCase()} ${d.side} ${d.symbol} ${d.quantity}个（posA=${d.pos_a} posB=${d.pos_b}）`
+      addToast(msg, 'warning', 10000)
+      playSound('error')
+      refreshPositions()
+    }
+    if (event.type === 'order_update') {
+      const d = event.data as any
+      if (d.status === 'FILLED') {
+        refreshTrades()
+      }
+    }
     if (event.type === 'task_status') {
       refreshTasks()
+    }
+    if (event.type === 'position_update') {
+      refreshPositions()
     }
     if (event.type === 'error') {
       const d = event.data as any
@@ -155,31 +149,29 @@ export function TradingView({ symbol, exchangeA, exchangeB }: TradingViewProps) 
       setError(msg)
       refreshTasks()
     }
-  }, [symbol, exchangeA, exchangeB, refreshTasks, refreshPositions])
+  }, [refreshTasks, refreshPositions, refreshTrades, addToast])
 
   const { connected, latencyMs: wsLatency } = useWebSocket(handleWS)
+
+  useEffect(() => {
+    setSpreads(new Map())
+    setEngineAgeA(undefined)
+    setEngineAgeB(undefined)
+  }, [exchangeA, exchangeB, symbol])
 
   useEffect(() => { refreshTasks() }, [refreshTasks])
   useEffect(() => { refreshPositions() }, [refreshPositions])
   useEffect(() => { refreshTrades() }, [refreshTrades])
 
-  // Fetch funding rates
-  const refreshFunding = useCallback(async () => {
-    try { setFundingA(await api.getFundingRate(exchangeA, symbol)) } catch { /* ignore */ }
-    try { setFundingB(await api.getFundingRate(exchangeB, symbol)) } catch { /* ignore */ }
-  }, [exchangeA, exchangeB, symbol])
-
-  useEffect(() => { refreshFunding() }, [refreshFunding])
-
-  // Auto-refresh positions every 15s, funding every 30s
+  // Auto-refresh positions every 15s, trades every 30s
   useEffect(() => {
-    const iv = setInterval(() => { refreshPositions(); refreshTrades() }, 15000)
-    const fiv = setInterval(refreshFunding, 30000)
-    return () => { clearInterval(iv); clearInterval(fiv) }
-  }, [refreshPositions, refreshTrades, refreshFunding])
+    const iv = setInterval(refreshPositions, 15000)
+    const tiv = setInterval(refreshTrades, 30000)
+    return () => { clearInterval(iv); clearInterval(tiv) }
+  }, [refreshPositions, refreshTrades])
 
-  const spread = (quoteA && quoteB) ? (quoteA.bid - quoteB.ask) : null
-  const midPrice = (quoteA && quoteB) ? (quoteA.bid + quoteB.ask) / 2 : null
+  const spread = (tickerA && tickerB) ? (tickerA.bid - tickerB.ask) : null
+  const midPrice = (tickerA && tickerB) ? (tickerA.bid + tickerB.ask) / 2 : null
   const spreadPct = (spread !== null && midPrice && midPrice !== 0) ? (spread / midPrice * 100) : null
 
   const handleCreateTask = async () => {
@@ -231,7 +223,7 @@ export function TradingView({ symbol, exchangeA, exchangeB }: TradingViewProps) 
           }}>&larr;</a>
           <span style={{ fontFamily: 'var(--font-mono)', fontSize: 18, fontWeight: 700 }}>{symbol}</span>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <ExchangeBadge name={exchangeA} color={colorA} ageMs={quoteA?.realAgeMs} />
+            <ExchangeBadge name={exchangeA} color={colorA} engineMs={engineAgeA} />
             <a
               href={`/trade/${symbol}/${exchangeB}/${exchangeA}`}
               style={{
@@ -243,7 +235,7 @@ export function TradingView({ symbol, exchangeA, exchangeB }: TradingViewProps) 
               onMouseLeave={e => (e.currentTarget.style.color = 'var(--text-dim)')}
               title="交换 A / B"
             >⇄</a>
-            <ExchangeBadge name={exchangeB} color={colorB} ageMs={quoteB?.realAgeMs} />
+            <ExchangeBadge name={exchangeB} color={colorB} engineMs={engineAgeB} />
           </div>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -508,13 +500,13 @@ function exchangeAgeColor(ms: number | undefined): string {
   return 'var(--accent-red)'
 }
 
-function ExchangeBadge({ name, color, ageMs }: { name: string; color: string; ageMs?: number }) {
+function ExchangeBadge({ name, color, engineMs }: { name: string; color: string; engineMs?: number }) {
   return (
     <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 12, fontWeight: 600, color, background: `${color}15`, padding: '3px 10px', borderRadius: 6 }}>
       {name.toUpperCase()}
-      {ageMs !== undefined && (
-        <span style={{ display: 'inline-block', width: 42, textAlign: 'right', fontSize: 10, fontFamily: 'var(--font-mono)', color: exchangeAgeColor(ageMs), fontWeight: 400 }}>
-          {ageMs}ms
+      {engineMs !== undefined && (
+        <span title="引擎 → 交易所数据延迟（NTP校准）" style={{ display: 'inline-block', width: 48, textAlign: 'right', fontSize: 10, fontFamily: 'var(--font-mono)', color: exchangeAgeColor(engineMs), fontWeight: 400 }}>
+          {engineMs}ms
         </span>
       )}
     </span>
@@ -618,7 +610,7 @@ function TaskRow({ task, spreadData, exchangeA, exchangeB, colorA, colorB, onRef
   )
 }
 
-function FundingCard({ data, label, color }: { data: api.FundingRate | null; label: string; color: string }) {
+function FundingCard({ data, label, color }: { data: { rate: number; next_funding_time: number; mark_price: number; index_price: number } | null; label: string; color: string }) {
   const ratePercent = data ? (data.rate * 100).toFixed(4) : '—'
   const rateColor = data ? (data.rate >= 0 ? 'var(--accent-green)' : 'var(--accent-red)') : 'var(--text-dim)'
   const nextTime = data?.next_funding_time ? new Date(data.next_funding_time).toLocaleTimeString() : '—'
@@ -653,12 +645,21 @@ function FundingCard({ data, label, color }: { data: api.FundingRate | null; lab
   )
 }
 
-// Extract trigger ID from clientOrderId (format: "sa-{8hex}-A/B")
+// Extract trigger ID from clientOrderId (format: "sa-{8hex}-A/B", "sm-{8hex}-A/B", "sr-{8hex}-R")
 function getTriggerID(clientOrderId: string): string | null {
-  if (!clientOrderId || !clientOrderId.startsWith('sa-')) return null
+  if (!clientOrderId) return null
+  if (!clientOrderId.startsWith('sa-') && !clientOrderId.startsWith('sm-') && !clientOrderId.startsWith('sr-')) return null
   const parts = clientOrderId.split('-')
   if (parts.length >= 2) return parts[1]
   return null
+}
+
+function getOrderSource(clientOrderId: string): { label: string; color: string } {
+  if (!clientOrderId) return { label: '', color: 'var(--text-dim)' }
+  if (clientOrderId.startsWith('sa-')) return { label: '自动', color: 'var(--accent-green)' }
+  if (clientOrderId.startsWith('sm-')) return { label: '手动', color: 'var(--accent-blue)' }
+  if (clientOrderId.startsWith('sr-')) return { label: 'Rebal', color: 'var(--accent-amber)' }
+  return { label: '外部', color: 'var(--text-dim)' }
 }
 
 function OrdersSection({ labelA, colorA, ordersA, labelB, colorB, ordersB }: {
@@ -724,6 +725,7 @@ function OrdersSection({ labelA, colorA, ordersA, labelB, colorB, ordersB }: {
             <thead>
               <tr style={{ borderBottom: '1px solid var(--border)' }}>
                 <th style={thCss}>Time</th>
+                <th style={thCss}>Source</th>
                 <th style={thCss}>Side</th>
                 <th style={thCss}>Qty</th>
                 <th style={thCss}>Price</th>
@@ -749,6 +751,7 @@ function OrdersSection({ labelA, colorA, ordersA, labelB, colorB, ordersB }: {
                     <td style={{ ...tdCss, color: 'var(--text-secondary)', fontSize: 11 }}>
                       {new Date(o.timestamp).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })}
                     </td>
+                    <td style={{ ...tdCss, fontSize: 10, fontWeight: 600, color: getOrderSource(o.client_order_id).color }}>{getOrderSource(o.client_order_id).label}</td>
                     <td style={{ ...tdCss, fontWeight: 600, color: o.side.toLowerCase() === 'buy' ? 'var(--accent-green)' : 'var(--accent-red)' }}>{o.side}</td>
                     <td style={tdCss}>{o.quantity}</td>
                     <td style={tdCss}>{o.price > 0 ? o.price.toFixed(4) : '市价'}</td>
