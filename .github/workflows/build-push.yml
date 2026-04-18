@@ -61,7 +61,7 @@ jobs:
             echo "Repo: $repo"
             echo "===================="
             aws ecr describe-images --repository-name $repo --region $AWS_REGION \
-              --query 'sort_by(imageDetails,&imagePushedAt)[*].{tags:imageTags,pushedAt:imagePushedAt,sizeMB:(imageSizeInBytes/`1048576`)}' \
+              --query 'sort_by(imageDetails,&imagePushedAt)[*].{tags:imageTags,pushedAt:imagePushedAt,sizeBytes:imageSizeInBytes}' \
               --output table
             echo ""
             echo "Latest points to commit: ${{ github.sha }}"
