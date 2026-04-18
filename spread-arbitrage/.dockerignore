@@ -1,0 +1,5 @@
+.env
+.git
+logs/
+web/node_modules/
+web/dist/

@@ -117,6 +117,30 @@ type FundingRate struct {
 	IndexPrice      float64 `json:"index_price"`
 }
 
+// OrderUpdate represents a real-time order status change from User Data Stream
+type OrderUpdate struct {
+	Exchange      string    `json:"exchange"`
+	Symbol        string    `json:"symbol"`
+	OrderID       string    `json:"order_id"`
+	ClientOrderID string    `json:"client_order_id"`
+	Side          string    `json:"side"`
+	Status        string    `json:"status"`    // NEW, PARTIALLY_FILLED, FILLED, CANCELED, EXPIRED
+	ExecType      string    `json:"exec_type"` // NEW, TRADE, CANCELED, EXPIRED
+	FilledQty     float64   `json:"filled_qty"`
+	AvgPrice      float64   `json:"avg_price"`
+	Timestamp     time.Time `json:"timestamp"`
+}
+
+// AccountUpdate represents a real-time position/balance change from User Data Stream
+type AccountUpdate struct {
+	Exchange  string    `json:"exchange"`
+	Symbol    string    `json:"symbol"`
+	Side      string    `json:"side"` // LONG, SHORT
+	Size      float64   `json:"size"`
+	Reason    string    `json:"reason"` // ORDER, ADL, FUNDING_FEE
+	Timestamp time.Time `json:"timestamp"`
+}
+
 // WSEvent is pushed to frontend via WebSocket
 type WSEvent struct {
 	Type   string      `json:"type"` // "spread_update", "task_status", "trade_executed", "error"
@@ -136,4 +160,6 @@ type SpreadUpdate struct {
 	Spread       float64 `json:"spread"`
 	OpenCounter  int     `json:"open_counter"`
 	CloseCounter int     `json:"close_counter"`
+	AgeA         int64   `json:"age_a_ms"`
+	AgeB         int64   `json:"age_b_ms"`
 }

@@ -52,30 +52,17 @@ func NewSpreadEvaluator(task *model.Task) *SpreadEvaluator {
 	}
 }
 
-// Evaluate checks the spread between two tickers and returns a signal
-func (se *SpreadEvaluator) Evaluate(a, b model.BookTicker) Signal {
+// Evaluate checks the spread between two tickers and returns a signal.
+// ageA/ageB are the clock-synced real ages of each tick (exchange_timestamp → now).
+func (se *SpreadEvaluator) Evaluate(a, b model.BookTicker, ageA, ageB time.Duration) Signal {
 	maxLatency := time.Duration(se.task.DataMaxLatencyMs) * time.Millisecond
 
-	// Latency check 1: Exchange timestamp vs receive time
-	if a.ReceivedAt.Sub(a.Timestamp) >= maxLatency {
+	if ageA >= maxLatency {
 		se.openCounter.Reset()
 		se.closeCounter.Reset()
 		return SignalNone
 	}
-	if b.ReceivedAt.Sub(b.Timestamp) >= maxLatency {
-		se.openCounter.Reset()
-		se.closeCounter.Reset()
-		return SignalNone
-	}
-
-	// Latency check 2: Freshness check
-	now := time.Now()
-	if now.Sub(a.ReceivedAt) >= maxLatency {
-		se.openCounter.Reset()
-		se.closeCounter.Reset()
-		return SignalNone
-	}
-	if now.Sub(b.ReceivedAt) >= maxLatency {
+	if ageB >= maxLatency {
 		se.openCounter.Reset()
 		se.closeCounter.Reset()
 		return SignalNone
